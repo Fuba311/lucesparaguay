@@ -69,7 +69,7 @@ except Exception:  # pragma: no cover
 
 
 APP_TITLE = "Explorador de luces nocturnas de Paraguay"
-APP_BUILD = "2026-07-22-R3-CACHE-GZIP-FAST-VECTORS"
+APP_BUILD = "2026-07-22-R4-DESELECCION-HOVER-BUSQUEDA"
 DEFAULT_DATA_DIR = "Resultados_luces_nocturnas_Paraguay"
 WEB_MERCATOR = "EPSG:3857"
 WGS84 = "EPSG:4326"
@@ -1203,6 +1203,9 @@ INDEX_HTML = r"""
     .search-result strong { display: block; font-size: 12px; }
     .search-result span { display: block; color: var(--muted); font-size: 10.5px; margin-top: 2px; }
     .search-empty { padding: 10px; color: var(--muted); font-size: 11px; }
+    .search-selection-actions { display: none; margin-top: 8px; }
+    .search-selection-actions button { width: 100%; background: #fff7ed; color: #9a4d00; border-color: #fed7aa; }
+    .search-selection-actions button:hover { background: #ffedd5; }
     .leaflet-tooltip { font-size: 11px; border-radius: 7px; box-shadow: var(--shadow); }
     .map-name-label {
       background: rgba(255,255,255,.92);
@@ -1239,7 +1242,10 @@ INDEX_HTML = r"""
         <input id="search-input" type="text" placeholder="Ej.: San Bernardino, Yby Yaú, Caaguazú…" autocomplete="off">
         <div id="search-results"></div>
       </div>
-      <div class="small" style="margin-top:7px">Busca departamentos, distritos, ciudades, pueblos y localidades. Selecciona un resultado para acercarte y ver sus datos.</div>
+      <div id="search-selection-actions" class="search-selection-actions">
+        <button id="clear-search-selection" type="button" class="secondary">Quitar selección buscada</button>
+      </div>
+      <div class="small" style="margin-top:7px">Busca departamentos, distritos, ciudades, pueblos y localidades. Usa “Quitar selección” o la tecla Esc para volver al hover normal.</div>
     </div>
 
     <div class="card">
@@ -1311,6 +1317,7 @@ const state = {
   nameLabelLayer: null,
   hotspotLayer: null,
   searchHighlight: null,
+  searchSelectedRow: null,
   searchRows: [],
   searchTimer: null,
   searchRequestToken: 0,
@@ -1426,6 +1433,9 @@ function createMapPanes() {
   }
   state.map.getPane('labelTilePane').style.pointerEvents = 'none';
   state.map.getPane('nameLabelPane').style.pointerEvents = 'none';
+  // El resaltado de una búsqueda debe ser solo visual: no puede bloquear
+  // mouseover/click de la capa administrativa que está debajo.
+  state.map.getPane('searchPane').style.pointerEvents = 'none';
 }
 
 async function init() {
@@ -1490,9 +1500,10 @@ function bindEvents() {
     if (state.rasterLayer) state.rasterLayer.setOpacity(opacity);
     if (state.pendingRasterLayer) state.pendingRasterLayer.setOpacity(0);
   });
-  document.getElementById('admin-layer').addEventListener('change', async () => { await loadAdminLayer(); await updateTopList(); });
+  document.getElementById('admin-layer').addEventListener('change', async () => { clearSearchHighlight(); await loadAdminLayer(); await updateTopList(); });
   document.getElementById('metric').addEventListener('change', async () => { restyleCurrentAdminLayer(); scheduleFeatureLabels(); await updateTopList(); });
   document.getElementById('department').addEventListener('change', async ev => {
+    clearSearchHighlight();
     await loadAdminLayer(); await updateTopList();
     if (!ev.target.value) state.map.fitBounds(state.config.bounds);
     else await zoomToDepartment(ev.target.value);
@@ -1515,8 +1526,13 @@ function bindEvents() {
     await updateTopList();
   });
 
+  document.getElementById('clear-search-selection').addEventListener('click', () => clearSearchHighlight());
+
   const searchInput = document.getElementById('search-input');
   searchInput.addEventListener('input', () => {
+    if (state.searchSelectedRow && searchInput.value.trim() !== String(state.searchSelectedRow.nombre || '').trim()) {
+      clearSearchHighlight({clearInput:false, resetPanel:false, clearStatus:false});
+    }
     clearTimeout(state.searchTimer);
     state.searchTimer = setTimeout(() => performSearch(searchInput.value), 220);
   });
@@ -1525,11 +1541,18 @@ function bindEvents() {
       ev.preventDefault();
       chooseSearchResult(state.searchRows[0]);
     } else if (ev.key === 'Escape') {
-      hideSearchResults();
+      ev.preventDefault();
+      if (state.searchHighlight) clearSearchHighlight();
+      else hideSearchResults();
     }
   });
   document.addEventListener('click', ev => {
     if (!ev.target.closest('.search-wrap')) hideSearchResults();
+  });
+  document.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape' && state.searchHighlight && ev.target !== searchInput) {
+      clearSearchHighlight();
+    }
   });
 }
 
@@ -1879,17 +1902,44 @@ function hideSearchResults() {
   document.getElementById('search-results').style.display = 'none';
 }
 
-function clearSearchHighlight() {
+function clearSearchHighlight(options={}) {
+  const {clearInput=true, resetPanel=true, clearStatus=true} = options;
   if (state.searchHighlight) {
     state.map.removeLayer(state.searchHighlight);
     state.searchHighlight = null;
   }
+  state.searchSelectedRow = null;
+
+  const actions = document.getElementById('search-selection-actions');
+  if (actions) actions.style.display = 'none';
+  const clearButton = document.getElementById('clear-search-selection');
+  if (clearButton) clearButton.textContent = 'Quitar selección buscada';
+
+  if (clearInput) {
+    const input = document.getElementById('search-input');
+    if (input) input.value = '';
+    state.searchRows = [];
+    hideSearchResults();
+  }
+
+  if (resetPanel) {
+    document.getElementById('feature-info').innerHTML = 'Pasa el cursor sobre una zona para ver sus métricas. Haz clic para cargar su serie anual.';
+    if (state.chart) {
+      state.chart.destroy();
+      state.chart = null;
+    }
+  }
+  if (clearStatus) setStatus('Selección buscada eliminada. El hover normal está activo.');
 }
 
 async function chooseSearchResult(row) {
   document.getElementById('search-input').value = row.nombre || '';
   hideSearchResults();
-  clearSearchHighlight();
+  clearSearchHighlight({clearInput:false, resetPanel:false, clearStatus:false});
+  state.searchSelectedRow = row;
+  const selectionActions = document.getElementById('search-selection-actions');
+  selectionActions.style.display = 'block';
+  document.getElementById('clear-search-selection').textContent = `Quitar selección: ${row.nombre || 'zona'}`;
   document.getElementById('department').value = '';
 
   const adminSelect = document.getElementById('admin-layer');
@@ -1902,8 +1952,9 @@ async function chooseSearchResult(row) {
   const gj = await fetchJson(`/api/feature/${encodeURIComponent(row.layer)}/${encodeURIComponent(row.id_zona)}`);
   state.searchHighlight = L.geoJSON(gj, {
     pane:'searchPane',
-    style:{pane:'searchPane', color:'#f59e0b', weight:4, fillColor:'#fbbf24', fillOpacity:.18},
-    pointToLayer:(feature, latlng) => L.circleMarker(latlng, {pane:'searchPane', radius:10, color:'#fff', weight:2.5, fillColor:'#f59e0b', fillOpacity:1}),
+    interactive:false,
+    style:{pane:'searchPane', interactive:false, color:'#f59e0b', weight:4, fillColor:'#fbbf24', fillOpacity:.18},
+    pointToLayer:(feature, latlng) => L.circleMarker(latlng, {pane:'searchPane', interactive:false, radius:10, color:'#fff', weight:2.5, fillColor:'#f59e0b', fillOpacity:1}),
     onEachFeature:(feature, layer) => layer.bindTooltip(`<strong>${escapeHtml(feature.properties.nombre || row.nombre)}</strong>`, {permanent:true, direction:'top', pane:'nameLabelPane'})
   }).addTo(state.map);
 
