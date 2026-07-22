@@ -30,11 +30,12 @@ En Windows PowerShell:
 
 Producción:
 
-    gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120
+    gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 180
 """
 
 from __future__ import annotations
 
+import gzip
 import io
 import json
 import math
@@ -68,7 +69,7 @@ except Exception:  # pragma: no cover
 
 
 APP_TITLE = "Explorador de luces nocturnas de Paraguay"
-APP_BUILD = "2026-07-21-R2-BUSCADOR-RASTER-FIX"
+APP_BUILD = "2026-07-22-R3-CACHE-GZIP-FAST-VECTORS"
 DEFAULT_DATA_DIR = "Resultados_luces_nocturnas_Paraguay"
 WEB_MERCATOR = "EPSG:3857"
 WGS84 = "EPSG:4326"
@@ -266,7 +267,7 @@ class NightLightsStore:
 
         self.available_gpkg_layers = self._list_gpkg_layers()
         self._vector_cache: dict[str, gpd.GeoDataFrame] = {}
-        self._geojson_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._geojson_bytes_cache: dict[tuple[str, str, bool], bytes] = {}
         self._department_geometry_cache: dict[str, Any] = {}
         self._search_index: pd.DataFrame | None = None
         self._lock = threading.RLock()
@@ -503,22 +504,41 @@ class NightLightsStore:
             self._department_geometry_cache[name] = geom
         return geom
 
-    def geojson(self, key: str, department: str = "") -> dict[str, Any]:
-        cache_key = (key, department or "")
-        with self._lock:
-            if cache_key in self._geojson_cache:
-                return self._geojson_cache[cache_key]
+    def _filter_vector_by_department(
+        self,
+        gdf: gpd.GeoDataFrame,
+        key: str,
+        department: str,
+    ) -> gpd.GeoDataFrame:
+        """Filtra primero por atributo y usa intersección espacial solo como respaldo."""
+        if not department or gdf.empty:
+            return gdf
+        if key == "departamentos":
+            if "nombre" not in gdf.columns:
+                return gdf.iloc[0:0].copy()
+            wanted = texto_normalizado(department)
+            mask = gdf["nombre"].map(texto_normalizado) == wanted
+            return gdf[mask].copy()
 
-        gdf = self.get_vector(key).copy()
-        if department and key != "departamentos" and not gdf.empty:
-            dep_geom = self.department_geometry(department)
-            if dep_geom is not None:
-                try:
-                    gdf = gdf[gdf.intersects(dep_geom)].copy()
-                except Exception:
-                    pass
-        if department and key == "departamentos" and not gdf.empty:
-            gdf = gdf[gdf["nombre"].astype(str) == department].copy()
+        if "departamento" in gdf.columns:
+            wanted = texto_normalizado(department)
+            mask = gdf["departamento"].map(texto_normalizado) == wanted
+            if bool(mask.any()):
+                return gdf[mask].copy()
+
+        dep_geom = self.department_geometry(department)
+        if dep_geom is None:
+            return gdf.iloc[0:0].copy()
+        try:
+            # GeoPandas usa el índice espacial cuando está disponible.
+            return gdf[gdf.intersects(dep_geom)].copy()
+        except Exception:
+            return gdf
+
+    def _build_geojson_payload(self, key: str, department: str = "") -> dict[str, Any]:
+        gdf = self._filter_vector_by_department(
+            self.get_vector(key).copy(), key, department
+        )
 
         # Limita propiedades para que los GeoJSON no sean innecesariamente grandes.
         property_fields = list(dict.fromkeys([
@@ -549,9 +569,32 @@ class NightLightsStore:
             "label": VECTOR_LAYER_DEFS[key]["label"],
             "count": len(slim),
         }
-        with self._lock:
-            self._geojson_cache[cache_key] = payload
         return payload
+
+    def geojson_bytes(
+        self,
+        key: str,
+        department: str = "",
+        compressed: bool = True,
+    ) -> bytes:
+        """Serializa una sola vez cada capa/filtro y conserva la versión comprimida."""
+        cache_key = (key, department or "", compressed)
+        with self._lock:
+            cached = self._geojson_bytes_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        payload = self._build_geojson_payload(key, department)
+        raw = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        data = gzip.compress(raw, compresslevel=5) if compressed else raw
+        with self._lock:
+            self._geojson_bytes_cache[cache_key] = data
+        return data
 
     def series(self, zone_id: str) -> list[dict[str, Any]]:
         if self.metrics.empty:
@@ -588,13 +631,9 @@ class NightLightsStore:
     ) -> list[dict[str, Any]]:
         if metric not in self.ranking.columns or layer_key not in VECTOR_LAYER_DEFS:
             return []
-        gdf = self.get_vector(layer_key).copy()
-        if department and layer_key != "departamentos":
-            dep_geom = self.department_geometry(department)
-            if dep_geom is not None:
-                gdf = gdf[gdf.intersects(dep_geom)].copy()
-        elif department and layer_key == "departamentos":
-            gdf = gdf[gdf["nombre"].astype(str) == department].copy()
+        gdf = self._filter_vector_by_department(
+            self.get_vector(layer_key).copy(), layer_key, department
+        )
         if gdf.empty or metric not in gdf.columns:
             return []
         gdf[metric] = pd.to_numeric(gdf[metric], errors="coerce")
@@ -1013,7 +1052,15 @@ def api_geojson(layer_key: str) -> Response:
     if layer_key not in VECTOR_LAYER_DEFS:
         abort(404)
     department = request.args.get("department", "").strip()
-    return jsonify(STORE.geojson(layer_key, department))
+    accepts_gzip = "gzip" in request.headers.get("Accept-Encoding", "").lower()
+    body = STORE.geojson_bytes(layer_key, department, compressed=accepts_gzip)
+    response = Response(body, mimetype="application/json")
+    if accepts_gzip:
+        response.headers["Content-Encoding"] = "gzip"
+    response.headers["Vary"] = "Accept-Encoding"
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    response.set_etag(f"{APP_BUILD}:{layer_key}:{department}:{int(accepts_gzip)}")
+    return response.make_conditional(request)
 
 
 @app.get("/api/series/<zone_id>")
@@ -1269,6 +1316,11 @@ const state = {
   searchRequestToken: 0,
   chart: null,
   currentGeoJSON: null,
+  currentAdminCacheKey: null,
+  adminToken: 0,
+  geojsonCache: new Map(),
+  adminLayerCache: new Map(),
+  labelRefreshTimer: null,
 };
 
 const fmt = (value, digits=2) => {
@@ -1285,10 +1337,46 @@ const selectedDepartment = () => document.getElementById('department').value;
 const selectedLayer = () => document.getElementById('admin-layer').value;
 const selectedMetric = () => document.getElementById('metric').value;
 
-async function fetchJson(url) {
-  const response = await fetch(url);
+async function fetchJson(url, options={}) {
+  const response = await fetch(url, {cache:'default', ...options});
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
   return response.json();
+}
+
+function vectorCacheKey(layerKey=selectedLayer(), department=selectedDepartment()) {
+  return `${layerKey}|${department || ''}`;
+}
+
+function setBoundedCache(map, key, value, maxEntries=10) {
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  while (map.size > maxEntries) {
+    const oldest = map.keys().next().value;
+    if (oldest === state.currentAdminCacheKey && map.size > 1) {
+      const current = map.get(oldest);
+      map.delete(oldest);
+      map.set(oldest, current);
+      continue;
+    }
+    map.delete(oldest);
+  }
+}
+
+async function getCachedGeoJSON(layerKey, department) {
+  const key = vectorCacheKey(layerKey, department);
+  if (state.geojsonCache.has(key)) return state.geojsonCache.get(key);
+  const params = new URLSearchParams();
+  if (department) params.set('department', department);
+  const promise = fetchJson(`/api/geojson/${layerKey}?${params}`);
+  setBoundedCache(state.geojsonCache, key, promise, 12);
+  try {
+    const geojson = await promise;
+    setBoundedCache(state.geojsonCache, key, geojson, 12);
+    return geojson;
+  } catch (error) {
+    state.geojsonCache.delete(key);
+    throw error;
+  }
 }
 
 function quantile(sorted, q) {
@@ -1359,7 +1447,7 @@ async function init() {
   await Promise.all([loadRaster(), loadAdminLayer(), updateTopList()]);
 
   state.map.on('click', queryPixel);
-  state.map.on('zoomend', refreshFeatureLabels);
+  state.map.on('zoomend', scheduleFeatureLabels);
 }
 
 function fillSelects() {
@@ -1403,13 +1491,13 @@ function bindEvents() {
     if (state.pendingRasterLayer) state.pendingRasterLayer.setOpacity(0);
   });
   document.getElementById('admin-layer').addEventListener('change', async () => { await loadAdminLayer(); await updateTopList(); });
-  document.getElementById('metric').addEventListener('change', async () => { await loadAdminLayer(); await updateTopList(); });
+  document.getElementById('metric').addEventListener('change', async () => { restyleCurrentAdminLayer(); scheduleFeatureLabels(); await updateTopList(); });
   document.getElementById('department').addEventListener('change', async ev => {
     await loadAdminLayer(); await updateTopList();
     if (!ev.target.value) state.map.fitBounds(state.config.bounds);
     else await zoomToDepartment(ev.target.value);
   });
-  document.getElementById('show-labels').addEventListener('change', () => { updateLabelTiles(); refreshFeatureLabels(); });
+  document.getElementById('show-labels').addEventListener('change', () => { updateLabelTiles(); scheduleFeatureLabels(); });
   document.getElementById('show-hotspots').addEventListener('change', loadHotspots);
   document.getElementById('hotspot-percentile').addEventListener('input', ev => document.getElementById('hotspot-label').textContent = ev.target.value);
   document.getElementById('hotspot-percentile').addEventListener('change', loadHotspots);
@@ -1528,42 +1616,102 @@ async function loadRaster() {
   window.setTimeout(() => finalize(true), 4500);
 }
 
-async function loadAdminLayer() {
-  const layerKey = selectedLayer();
-  if (!layerKey) return;
-  setStatus('Cargando capa…');
-  if (state.adminLayer) state.map.removeLayer(state.adminLayer);
-  clearFeatureLabels();
-  const params = new URLSearchParams();
-  if (selectedDepartment()) params.set('department', selectedDepartment());
-  const geojson = await fetchJson(`/api/geojson/${layerKey}?${params}`);
-  state.currentGeoJSON = geojson;
-  const metric = selectedMetric();
-  const domain = metricDomain(geojson, metric);
+function pointRadius(value, domain) {
+  value = Number(value);
+  if (!Number.isFinite(value)) return 3;
+  const span = Math.abs(domain.max - domain.min) || 1;
+  return Math.max(3, Math.min(10, 4 + Math.abs(value - domain.min) / span * 5));
+}
 
-  state.adminLayer = L.geoJSON(geojson, {
+function buildAdminLayer(geojson, layerKey, metric, domain) {
+  const canvasRenderer = L.canvas({padding:.35});
+  return L.geoJSON(geojson, {
     pane:'adminPane',
+    renderer:canvasRenderer,
     style: feature => ({
       pane:'adminPane', color:'#52616f', weight:layerKey === 'departamentos' ? 1.3 : .8,
       fillColor:featureColor(feature.properties[metric], domain), fillOpacity:.58,
     }),
     pointToLayer: (feature, latlng) => {
       const value = Number(feature.properties[metric]);
-      const radius = Number.isFinite(value) ? Math.max(3, Math.min(10, 4 + Math.abs(value-domain.min)/(Math.abs(domain.max-domain.min)||1)*5)) : 3;
-      return L.circleMarker(latlng, {pane:'adminPane', radius, color:'#fff', weight:.8, fillColor:featureColor(value,domain), fillOpacity:.88});
+      return L.circleMarker(latlng, {
+        pane:'adminPane', renderer:canvasRenderer,
+        radius:pointRadius(value, domain), color:'#fff', weight:.8,
+        fillColor:featureColor(value,domain), fillOpacity:.88
+      });
     },
     onEachFeature: (feature, layer) => {
       layer.bindTooltip(tooltipHtml(feature.properties, metric), {sticky:true, direction:'auto', pane:'nameLabelPane'});
       layer.on('mouseover', () => showFeatureInfo(feature.properties, false));
       layer.on('click', () => { showFeatureInfo(feature.properties, true); loadSeries(feature.properties.id_zona, feature.properties.nombre); });
     }
-  }).addTo(state.map);
-  refreshFeatureLabels();
-  setStatus(`${geojson.meta?.count || geojson.features.length} elementos cargados.`);
+  });
+}
+
+function restyleAdminLayer(layer=state.adminLayer, geojson=state.currentGeoJSON, layerKey=selectedLayer()) {
+  if (!layer || !geojson) return;
+  const metric = selectedMetric();
+  const domain = metricDomain(geojson, metric);
+  layer.eachLayer(item => {
+    if (!item.feature) return;
+    const p = item.feature.properties || {};
+    const value = Number(p[metric]);
+    if (typeof item.setRadius === 'function') item.setRadius(pointRadius(value, domain));
+    if (typeof item.setStyle === 'function') {
+      item.setStyle({
+        color: typeof item.getLatLng === 'function' ? '#fff' : '#52616f',
+        weight: typeof item.getLatLng === 'function' ? .8 : (layerKey === 'departamentos' ? 1.3 : .8),
+        fillColor:featureColor(value, domain),
+        fillOpacity:typeof item.getLatLng === 'function' ? .88 : .58,
+      });
+    }
+    if (typeof item.setTooltipContent === 'function') item.setTooltipContent(tooltipHtml(p, metric));
+  });
+}
+
+async function loadAdminLayer() {
+  const layerKey = selectedLayer();
+  if (!layerKey) return;
+  const department = selectedDepartment();
+  const cacheKey = vectorCacheKey(layerKey, department);
+  const token = ++state.adminToken;
+  setStatus('Cargando capa…');
+
+  const wasCached = state.geojsonCache.has(cacheKey) || state.adminLayerCache.has(cacheKey);
+  try {
+    const geojson = await getCachedGeoJSON(layerKey, department);
+    if (token !== state.adminToken) return;
+    const metric = selectedMetric();
+    const domain = metricDomain(geojson, metric);
+    let nextLayer = state.adminLayerCache.get(cacheKey);
+    if (!nextLayer) {
+      nextLayer = buildAdminLayer(geojson, layerKey, metric, domain);
+      setBoundedCache(state.adminLayerCache, cacheKey, nextLayer, 8);
+    }
+
+    const previous = state.adminLayer;
+    state.currentGeoJSON = geojson;
+    state.currentAdminCacheKey = cacheKey;
+    state.adminLayer = nextLayer;
+    restyleAdminLayer(nextLayer, geojson, layerKey);
+
+    if (!state.map.hasLayer(nextLayer)) nextLayer.addTo(state.map);
+    if (previous && previous !== nextLayer && state.map.hasLayer(previous)) state.map.removeLayer(previous);
+    scheduleFeatureLabels();
+    setStatus(`${geojson.meta?.count || geojson.features.length} elementos cargados${wasCached ? ' · desde caché' : ''}.`);
+  } catch (error) {
+    if (token !== state.adminToken) return;
+    setStatus(`No se pudo cargar la capa: ${error.message}`);
+  }
 }
 
 function clearFeatureLabels() {
   if (state.nameLabelLayer) state.nameLabelLayer.clearLayers();
+}
+
+function scheduleFeatureLabels() {
+  clearTimeout(state.labelRefreshTimer);
+  state.labelRefreshTimer = setTimeout(refreshFeatureLabels, 90);
 }
 
 function refreshFeatureLabels() {
@@ -1679,7 +1827,7 @@ async function updateTopList() {
 }
 
 async function zoomToDepartment(name) {
-  const gj = await fetchJson(`/api/geojson/departamentos?department=${encodeURIComponent(name)}`);
+  const gj = await getCachedGeoJSON('departamentos', name);
   if (gj.features && gj.features.length) {
     const temp = L.geoJSON(gj); state.map.fitBounds(temp.getBounds(), {padding:[20,20]});
   }
