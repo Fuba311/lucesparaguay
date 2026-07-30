@@ -42,7 +42,10 @@ import math
 import os
 import re
 import threading
+import time
 import unicodedata
+import urllib.parse
+import urllib.request
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
@@ -69,7 +72,7 @@ except Exception:  # pragma: no cover
 
 
 APP_TITLE = "Explorador de luces nocturnas de Paraguay"
-APP_BUILD = "2026-07-30-R5-DATOS-COMPRIMIDOS"
+APP_BUILD = "2026-07-30-R6-SERVICIOS-RUTAS"
 DEFAULT_DATA_DIR = "Resultados_luces_nocturnas_Paraguay"
 WEB_MERCATOR = "EPSG:3857"
 WGS84 = "EPSG:4326"
@@ -88,6 +91,22 @@ METRIC_LABELS: dict[str, str] = {
     "pendiente_theil_sen_anual": "Tendencia anual robusta",
     "area_nueva_1_0_km2_final": "Nueva área iluminada >1 nW (km²)",
     "ranking_nivel": "Ranking dentro del nivel",
+    "service_access_score": "Acceso a servicios (0–100)",
+    "service_gap_score": "Déficit de servicios (0–100)",
+    "demand_score": "Demanda poblacional (0–100)",
+    "investment_score_experimental": "Puntaje inversión experimental",
+    "population": "Población estimada de localidad",
+    "population_est": "Población estimada del distrito",
+    "hospital_nearest_km": "Hospital más cercano (km)",
+    "primary_health_nearest_km": "Atención primaria más cercana (km)",
+    "supermarket_nearest_km": "Supermercado más cercano (km)",
+    "education_nearest_km": "Centro educativo más cercano (km)",
+    "pharmacy_nearest_km": "Farmacia más cercana (km)",
+    "hospital_per_10k": "Hospitales por 10.000 hab.",
+    "primary_health_per_10k": "Atención primaria por 10.000 hab.",
+    "education_per_10k": "Centros educativos por 10.000 hab.",
+    "supermarket_per_10k": "Supermercados por 10.000 hab.",
+    "pharmacy_per_10k": "Farmacias por 10.000 hab.",
 }
 
 TOOLTIP_FIELDS = [
@@ -248,7 +267,9 @@ class NightLightsStore:
         self.root = root
         self.gpkg = find_first(root, "areas_estudio_paraguay.gpkg")
         self.ranking_path = (
-            find_first(root, "ranking_crecimiento.csv.gz")
+            find_first(root, "ranking_crecimiento_y_servicios.csv.gz")
+            or find_first(root, "ranking_crecimiento_y_servicios.csv")
+            or find_first(root, "ranking_crecimiento.csv.gz")
             or find_first(root, "ranking_crecimiento.csv")
         )
         self.metrics_path = (
@@ -947,8 +968,220 @@ class NightLightsStore:
         }
 
 
+SERVICE_GROUPS: dict[str, tuple[str, set[str] | None]] = {
+    "hospital": ("health", {"hospital", "hospital_major"}),
+    "primary_health": ("health", {"clinic", "health_centre", "health_post", "usf"}),
+    "health_facility": ("health", {"hospital", "hospital_major", "clinic", "health_centre", "health_post", "usf", "health_other"}),
+    "education": ("education", None),
+    "supermarket": ("supermarket", None),
+    "pharmacy": ("pharmacy", None),
+    "bank": ("bank", None),
+    "fuel": ("fuel", None),
+    "police": ("police", None),
+    "fire_station": ("fire_station", None),
+    "market": ("market", None),
+    "doctor": ("health", {"doctors"}),
+    "dentist": ("health", {"dentist"}),
+}
+SERVICE_LABELS = {
+    "hospital": "Hospitales",
+    "primary_health": "Clínicas, centros, puestos y USF",
+    "education": "Escuelas y centros educativos",
+    "supermarket": "Supermercados",
+    "pharmacy": "Farmacias",
+    "bank": "Bancos y cajeros",
+    "fuel": "Estaciones de servicio",
+    "police": "Policía",
+    "fire_station": "Bomberos",
+    "market": "Mercados",
+}
+DEFAULT_SERVICE_GROUPS = ("hospital", "primary_health", "education", "supermarket", "pharmacy")
+
+
+def haversine_km(lat: float, lon: float, lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
+    radius = 6371.0088
+    lat1 = np.radians(float(lat))
+    lon1 = np.radians(float(lon))
+    lat2 = np.radians(lats.astype("float64"))
+    lon2 = np.radians(lons.astype("float64"))
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat / 2.0) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2.0) ** 2
+    return 2.0 * radius * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
+
+
+class ServiceStore:
+    def __init__(self, root: Path):
+        self.path = find_first(root, "servicios.csv.gz") or find_first(root, "servicios.csv")
+        self.available = self.path is not None
+        self.frame = pd.DataFrame()
+        if not self.available:
+            return
+        required = ["service_id", "category", "subcategory", "name", "source", "department", "district", "lat", "lon"]
+        self.frame = pd.read_csv(
+            self.path,
+            compression="infer",
+            low_memory=False,
+            usecols=lambda c: c in required,
+        )
+        for col in ("lat", "lon"):
+            self.frame[col] = pd.to_numeric(self.frame[col], errors="coerce", downcast="float")
+        self.frame = self.frame.dropna(subset=["lat", "lon"]).reset_index(drop=True)
+        for col in ("service_id", "category", "subcategory", "name", "source", "department", "district"):
+            if col not in self.frame.columns:
+                self.frame[col] = ""
+            self.frame[col] = self.frame[col].fillna("").astype(str)
+
+    def group_mask(self, group: str) -> pd.Series:
+        raw, allowed = SERVICE_GROUPS.get(group, (group, None))
+        mask = self.frame["category"].eq(raw)
+        if allowed is not None:
+            mask &= self.frame["subcategory"].isin(allowed)
+        return mask
+
+    def public_config(self) -> dict[str, Any]:
+        return {
+            "available": self.available,
+            "count": int(len(self.frame)),
+            "groups": [
+                {"key": key, "label": SERVICE_LABELS[key]}
+                for key in SERVICE_LABELS
+                if self.available and bool(self.group_mask(key).any())
+            ],
+            "default_groups": list(DEFAULT_SERVICE_GROUPS),
+        }
+
+    def bbox(self, west: float, south: float, east: float, north: float, groups: list[str], limit: int) -> dict[str, Any]:
+        if not self.available:
+            return {"type": "FeatureCollection", "features": [], "meta": {"available": False}}
+        mask = (
+            self.frame["lon"].between(west, east)
+            & self.frame["lat"].between(south, north)
+        )
+        if groups:
+            group_mask = pd.Series(False, index=self.frame.index)
+            for group in groups:
+                group_mask |= self.group_mask(group)
+            mask &= group_mask
+        selected = self.frame.loc[mask].copy()
+        total = len(selected)
+        if total > limit:
+            selected = selected.head(limit)
+        features = []
+        for row in selected.itertuples(index=False):
+            logical_group = next((g for g in groups if bool(self.group_mask(g).iloc[row.Index]) ), None) if False else None
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [float(row.lon), float(row.lat)]},
+                "properties": clean_record({
+                    "service_id": row.service_id,
+                    "category": row.category,
+                    "subcategory": row.subcategory,
+                    "name": row.name,
+                    "source": row.source,
+                    "department": row.department,
+                    "district": row.district,
+                }),
+            })
+        return {
+            "type": "FeatureCollection",
+            "features": features,
+            "meta": {"available": True, "count": len(features), "total_in_bbox": total, "truncated": total > limit},
+        }
+
+    def nearest_air(self, lat: float, lon: float, groups: list[str], candidates_per_group: int = 5) -> dict[str, Any]:
+        rows: list[dict[str, Any]] = []
+        for group in groups:
+            subset = self.frame.loc[self.group_mask(group)].copy()
+            if subset.empty:
+                continue
+            distances = haversine_km(lat, lon, subset["lat"].to_numpy(), subset["lon"].to_numpy())
+            order = np.argsort(distances)[:max(1, candidates_per_group)]
+            for pos in order:
+                row = subset.iloc[int(pos)]
+                rows.append(clean_record({
+                    "query_category": group,
+                    "service_id": row["service_id"],
+                    "category": row["category"],
+                    "subcategory": row["subcategory"],
+                    "name": row["name"],
+                    "lat": row["lat"],
+                    "lon": row["lon"],
+                    "air_distance_km": float(distances[int(pos)]),
+                }))
+        return {"origin": {"lat": lat, "lon": lon}, "method": "air", "candidates": rows}
+
+
+@lru_cache(maxsize=512)
+def osrm_json(path: str, query_string: str) -> dict[str, Any]:
+    base = os.environ.get("OSRM_URL", "https://router.project-osrm.org").rstrip("/")
+    url = f"{base}{path}?{query_string}"
+    req = urllib.request.Request(url, headers={"User-Agent": "LucesParaguayMap/1.0"})
+    timeout = float(os.environ.get("OSRM_TIMEOUT", "25"))
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if payload.get("code") != "Ok":
+        raise RuntimeError(payload.get("message") or payload.get("code") or "OSRM error")
+    return payload
+
+
+def nearest_driving(lat: float, lon: float, groups: list[str]) -> dict[str, Any]:
+    air = SERVICES.nearest_air(lat, lon, groups, candidates_per_group=4)
+    candidates = air["candidates"]
+    if not candidates:
+        return {"origin": {"lat": lat, "lon": lon}, "method": "air", "services": []}
+    coords = [f"{lon:.7f},{lat:.7f}"] + [f"{float(r['lon']):.7f},{float(r['lat']):.7f}" for r in candidates]
+    query = urllib.parse.urlencode({
+        "sources": "0",
+        "destinations": ";".join(str(i) for i in range(1, len(coords))),
+        "annotations": "duration,distance",
+    })
+    try:
+        payload = osrm_json("/table/v1/driving/" + ";".join(coords), query)
+        durations = payload.get("durations", [[]])[0]
+        distances = payload.get("distances", [[]])[0]
+        best: dict[str, dict[str, Any]] = {}
+        for row, duration, distance in zip(candidates, durations, distances):
+            if duration is None or distance is None:
+                continue
+            enriched = dict(row)
+            enriched["duration_minutes"] = float(duration) / 60.0
+            enriched["distance_km"] = float(distance) / 1000.0
+            group = str(row["query_category"])
+            if group not in best or enriched["duration_minutes"] < best[group]["duration_minutes"]:
+                best[group] = enriched
+        return {"origin": {"lat": lat, "lon": lon}, "method": "OSRM", "services": [best[g] for g in groups if g in best]}
+    except Exception as exc:
+        best_air: dict[str, dict[str, Any]] = {}
+        for row in candidates:
+            group = str(row["query_category"])
+            if group not in best_air or float(row["air_distance_km"]) < float(best_air[group]["air_distance_km"]):
+                best_air[group] = row
+        return {
+            "origin": {"lat": lat, "lon": lon},
+            "method": "air_fallback",
+            "warning": str(exc),
+            "services": [best_air[g] for g in groups if g in best_air],
+        }
+
+
+def route_between(from_lat: float, from_lon: float, to_lat: float, to_lon: float) -> dict[str, Any]:
+    coords = f"{from_lon:.7f},{from_lat:.7f};{to_lon:.7f},{to_lat:.7f}"
+    query = urllib.parse.urlencode({"overview": "full", "geometries": "geojson", "steps": "false", "alternatives": "false"})
+    payload = osrm_json("/route/v1/driving/" + coords, query)
+    route = payload["routes"][0]
+    return {
+        "duration_minutes": float(route["duration"]) / 60.0,
+        "distance_km": float(route["distance"]) / 1000.0,
+        "geometry": route.get("geometry"),
+        "snapped": [w.get("location") for w in payload.get("waypoints", [])],
+        "method": "OSRM",
+    }
+
+
 DATA_DIR = locate_data_dir()
 STORE = NightLightsStore(DATA_DIR)
+SERVICES = ServiceStore(DATA_DIR)
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
 
@@ -1047,7 +1280,7 @@ def render_raster_tile(layer_key: str, z: int, x: int, y: int) -> bytes:
 
 @app.get("/health")
 def health() -> Response:
-    return jsonify({"status": "ok", "build": APP_BUILD, "data_dir": str(DATA_DIR), "rasters": len(STORE.rasters)})
+    return jsonify({"status": "ok", "build": APP_BUILD, "data_dir": str(DATA_DIR), "rasters": len(STORE.rasters), "services": len(SERVICES.frame) if SERVICES.available else 0})
 
 
 @app.get("/api/config")
@@ -1078,6 +1311,7 @@ def api_config() -> Response:
             "metrics": metrics,
             "departments": STORE.department_names(),
             "data_dir_name": DATA_DIR.name,
+            "services": SERVICES.public_config(),
         }
     )
 
@@ -1149,6 +1383,53 @@ def api_hotspots() -> Response:
     percentile = float(request.args.get("percentile", "98.5"))
     max_points = int(request.args.get("max_points", str(MAX_HOTSPOT_POINTS)))
     return jsonify(STORE.hotspot_points(percentile, max_points))
+
+
+@app.get("/api/services")
+def api_services() -> Response:
+    if not SERVICES.available:
+        return jsonify({"type": "FeatureCollection", "features": [], "meta": {"available": False}})
+    try:
+        west, south, east, north = [float(x) for x in request.args.get("bbox", "").split(",")]
+    except Exception:
+        return jsonify({"error": "bbox debe ser west,south,east,north"}), 400
+    groups = [g for g in request.args.get("groups", "").split(",") if g in SERVICE_GROUPS]
+    limit = min(max(int(request.args.get("limit", "1500")), 1), 3000)
+    return jsonify(SERVICES.bbox(west, south, east, north, groups, limit))
+
+
+@app.get("/api/services/nearest")
+def api_services_nearest() -> Response:
+    try:
+        lat = float(request.args["lat"]); lon = float(request.args["lon"])
+    except (KeyError, ValueError):
+        return jsonify({"error": "lat y lon son obligatorios"}), 400
+    groups = [g for g in request.args.get("groups", ",".join(DEFAULT_SERVICE_GROUPS)).split(",") if g in SERVICE_GROUPS]
+    payload = SERVICES.nearest_air(lat, lon, groups, candidates_per_group=1)
+    payload["services"] = payload.pop("candidates", [])
+    return jsonify(payload)
+
+
+@app.get("/api/services/nearest-driving")
+def api_services_nearest_driving() -> Response:
+    try:
+        lat = float(request.args["lat"]); lon = float(request.args["lon"])
+    except (KeyError, ValueError):
+        return jsonify({"error": "lat y lon son obligatorios"}), 400
+    groups = [g for g in request.args.get("groups", ",".join(DEFAULT_SERVICE_GROUPS)).split(",") if g in SERVICE_GROUPS]
+    return jsonify(nearest_driving(lat, lon, groups))
+
+
+@app.get("/api/route")
+def api_route() -> Response:
+    try:
+        values = {key: float(request.args[key]) for key in ("from_lat", "from_lon", "to_lat", "to_lon")}
+    except (KeyError, ValueError):
+        return jsonify({"error": "Coordenadas de origen y destino obligatorias"}), 400
+    try:
+        return jsonify(route_between(**values))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
 
 
 @app.get("/tiles/<layer_key>/<int:z>/<int:x>/<int:y>.png")
@@ -1241,6 +1522,13 @@ INDEX_HTML = r"""
     .search-selection-actions { display: none; margin-top: 8px; }
     .search-selection-actions button { width: 100%; background: #fff7ed; color: #9a4d00; border-color: #fed7aa; }
     .search-selection-actions button:hover { background: #ffedd5; }
+    .service-options { display:grid; grid-template-columns:1fr 1fr; gap:5px 8px; margin-top:8px; }
+    .service-option { display:flex; align-items:center; gap:6px; font-size:11px; }
+    .service-option input { width:auto; }
+    .service-result { border-top:1px solid #eef2f5; padding:8px 0; }
+    .service-result:first-child { border-top:0; }
+    .service-result button { margin-top:5px; padding:5px 8px; font-size:10px; }
+    .service-dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; background:var(--accent); }
     .leaflet-tooltip { font-size: 11px; border-radius: 7px; box-shadow: var(--shadow); }
     .map-name-label {
       background: rgba(255,255,255,.92);
@@ -1317,6 +1605,19 @@ INDEX_HTML = r"""
       <div id="status" class="status"></div>
     </div>
 
+    <div class="card" id="services-card">
+      <h2>Servicios y tiempos de viaje</h2>
+      <div class="check-row"><input id="show-services" type="checkbox"><span>Mostrar servicios en el mapa</span></div>
+      <div id="service-options" class="service-options"></div>
+      <div class="check-row"><input id="driving-times" type="checkbox" checked><span>Calcular tiempos reales en auto al hacer clic</span></div>
+      <div class="row" style="margin-top:9px">
+        <button id="reload-services" class="secondary" type="button">Actualizar servicios</button>
+        <button id="clear-route" class="secondary" type="button">Quitar ruta</button>
+      </div>
+      <div id="service-status" class="status"></div>
+      <div id="service-results" class="small">Haz clic en el mapa para buscar los servicios más cercanos.</div>
+    </div>
+
     <div class="card">
       <h2>Zona seleccionada</h2>
       <div id="feature-info" class="small">Pasa el cursor sobre una zona para ver sus métricas. Haz clic para cargar su serie anual.</div>
@@ -1329,7 +1630,7 @@ INDEX_HTML = r"""
     </div>
 
     <div class="card">
-      <h2>Zonas con mayor crecimiento</h2>
+      <h2>Ranking de zonas</h2>
       <ol id="top-list"></ol>
     </div>
 
@@ -1363,6 +1664,12 @@ const state = {
   geojsonCache: new Map(),
   adminLayerCache: new Map(),
   labelRefreshTimer: null,
+  servicesLayer: null,
+  serviceRequestToken: 0,
+  serviceMoveTimer: null,
+  serviceOrigin: null,
+  routeLayer: null,
+  routeMarkers: null,
 };
 
 const fmt = (value, digits=2) => {
@@ -1458,6 +1765,8 @@ function createMapPanes() {
     rasterPane: 300,
     hotspotPane: 360,
     adminPane: 420,
+    servicesPane: 500,
+    routePane: 560,
     labelTilePane: 600,
     nameLabelPane: 650,
     searchPane: 700,
@@ -1487,12 +1796,14 @@ async function init() {
   state.map.fitBounds(state.config.bounds);
 
   fillSelects();
+  fillServiceOptions();
   bindEvents();
   updateLabelTiles();
   await Promise.all([loadRaster(), loadAdminLayer(), updateTopList()]);
 
-  state.map.on('click', queryPixel);
+  state.map.on('click', handleMapClick);
   state.map.on('zoomend', scheduleFeatureLabels);
+  state.map.on('moveend', scheduleServicesLoad);
 }
 
 function fillSelects() {
@@ -1520,6 +1831,29 @@ function fillSelects() {
   for (const name of state.config.departments) {
     const option = document.createElement('option'); option.value = name; option.textContent = name; dep.appendChild(option);
   }
+}
+
+function fillServiceOptions() {
+  const wrapper = document.getElementById('service-options');
+  wrapper.innerHTML = '';
+  const cfg = state.config.services || {available:false, groups:[], default_groups:[]};
+  if (!cfg.available) {
+    document.getElementById('services-card').style.display = 'none';
+    return;
+  }
+  for (const group of cfg.groups || []) {
+    const label = document.createElement('label');
+    label.className = 'service-option';
+    const input = document.createElement('input');
+    input.type = 'checkbox'; input.value = group.key; input.className = 'service-category';
+    input.checked = (cfg.default_groups || []).includes(group.key);
+    const span = document.createElement('span'); span.textContent = group.label;
+    label.append(input, span); wrapper.appendChild(label);
+  }
+}
+
+function selectedServiceGroups() {
+  return [...document.querySelectorAll('.service-category:checked')].map(el => el.value);
 }
 
 function bindEvents() {
@@ -1558,8 +1892,13 @@ function bindEvents() {
     await loadRaster();
     await loadAdminLayer();
     await loadHotspots();
+    await loadServices();
     await updateTopList();
   });
+  document.getElementById('show-services').addEventListener('change', loadServices);
+  document.getElementById('reload-services').addEventListener('click', loadServices);
+  document.getElementById('clear-route').addEventListener('click', clearRoute);
+  document.querySelectorAll('.service-category').forEach(el => el.addEventListener('change', loadServices));
 
   document.getElementById('clear-search-selection').addEventListener('click', () => clearSearchHighlight());
 
@@ -1826,6 +2165,14 @@ function showFeatureInfo(p, selected) {
       <div class="metric-box"><span>CAGR anual</span><strong>${fmt(p.cagr_pct_anual)}%</strong></div>
       <div class="metric-box"><span>Puntaje</span><strong>${fmt(p.puntaje_crecimiento)}</strong></div>
     </div>
+    ${(p.service_access_score !== null && p.service_access_score !== undefined) ? `<h2 style="margin-top:12px">Servicios</h2><div class="metrics-grid">
+      <div class="metric-box"><span>Acceso</span><strong>${fmt(p.service_access_score)}</strong></div>
+      <div class="metric-box"><span>Déficit</span><strong>${fmt(p.service_gap_score)}</strong></div>
+      <div class="metric-box"><span>Hospital cercano</span><strong>${fmt(p.hospital_nearest_km)} km</strong></div>
+      <div class="metric-box"><span>Supermercado cercano</span><strong>${fmt(p.supermarket_nearest_km)} km</strong></div>
+      <div class="metric-box"><span>Población estimada</span><strong>${fmt(p.population ?? p.population_est,0)}</strong></div>
+      <div class="metric-box"><span>Hospitales / 10k</span><strong>${fmt(p.hospital_per_10k)}</strong></div>
+    </div>` : ''}
     ${p.advertencia ? `<div class="warning">${escapeHtml(p.advertencia)}</div>` : ''}`;
   document.getElementById('feature-info').innerHTML = html;
 }
@@ -1860,6 +2207,130 @@ async function loadHotspots() {
   const points = (gj.features || []).map(f => [f.geometry.coordinates[1], f.geometry.coordinates[0], f.properties.weight]);
   state.hotspotLayer = L.heatLayer(points, {pane:'hotspotPane', radius:16, blur:18, maxZoom:13, minOpacity:.25}).addTo(state.map);
   setStatus(`${points.length} celdas hotspot; umbral ${fmt(gj.meta?.threshold)}.`);
+}
+
+function serviceGroupForFeature(p) {
+  if (p.category === 'health') {
+    if (['hospital','hospital_major'].includes(p.subcategory)) return 'hospital';
+    if (['clinic','health_centre','health_post','usf'].includes(p.subcategory)) return 'primary_health';
+  }
+  return p.category;
+}
+
+function serviceMarkerStyle(group) {
+  const styles = {
+    hospital:['#b91c1c',7], primary_health:['#dc2626',6], education:['#7c3aed',6],
+    supermarket:['#15803d',6], pharmacy:['#db2777',6], bank:['#1d4ed8',6], fuel:['#a16207',6],
+    police:['#334155',6], fire_station:['#ea580c',6], market:['#0f766e',6]
+  };
+  return styles[group] || ['#475569',5];
+}
+
+function scheduleServicesLoad() {
+  clearTimeout(state.serviceMoveTimer);
+  state.serviceMoveTimer = setTimeout(loadServices, 180);
+}
+
+async function loadServices() {
+  if (state.servicesLayer) { state.map.removeLayer(state.servicesLayer); state.servicesLayer = null; }
+  if (!state.config.services?.available || !document.getElementById('show-services').checked) {
+    document.getElementById('service-status').textContent = '';
+    return;
+  }
+  if (state.map.getZoom() < 8) {
+    document.getElementById('service-status').textContent = 'Acércate a zoom 8 o superior para cargar los puntos.';
+    return;
+  }
+  const groups = selectedServiceGroups();
+  if (!groups.length) return;
+  const token = ++state.serviceRequestToken;
+  const b = state.map.getBounds();
+  const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(',');
+  document.getElementById('service-status').textContent = 'Cargando servicios visibles…';
+  try {
+    const payload = await fetchJson(`/api/services?bbox=${encodeURIComponent(bbox)}&groups=${encodeURIComponent(groups.join(','))}&limit=1500`);
+    if (token !== state.serviceRequestToken) return;
+    const canvas = L.canvas({padding:.35});
+    state.servicesLayer = L.geoJSON(payload, {
+      pane:'servicesPane', renderer:canvas,
+      pointToLayer:(feature,latlng) => {
+        const group = serviceGroupForFeature(feature.properties || {});
+        const [color,radius] = serviceMarkerStyle(group);
+        return L.circleMarker(latlng,{pane:'servicesPane',renderer:canvas,radius,color:'#fff',weight:1,fillColor:color,fillOpacity:.92});
+      },
+      onEachFeature:(feature,layer) => {
+        const p=feature.properties||{};
+        const detail=[p.subcategory,p.district,p.department].filter(Boolean).join(' · ');
+        layer.bindPopup(`<strong>${escapeHtml(p.name || 'Servicio')}</strong><br><span class=\"small\">${escapeHtml(detail)}</span>`);
+      }
+    }).addTo(state.map);
+    const meta=payload.meta||{};
+    document.getElementById('service-status').textContent = `${meta.count || 0} servicios visibles${meta.truncated ? ' (límite alcanzado; acerca el mapa)' : ''}.`;
+  } catch (error) {
+    document.getElementById('service-status').textContent = `Error cargando servicios: ${error.message}`;
+  }
+}
+
+async function handleMapClick(ev) {
+  queryPixel(ev).catch(console.error);
+  if (state.config.services?.available) queryNearestServices(ev.latlng).catch(console.error);
+}
+
+async function queryNearestServices(latlng) {
+  const groups=selectedServiceGroups();
+  if (!groups.length) return;
+  state.serviceOrigin={lat:latlng.lat,lon:latlng.lng};
+  document.getElementById('service-results').innerHTML='Buscando servicios cercanos…';
+  const endpoint=document.getElementById('driving-times').checked ? 'nearest-driving' : 'nearest';
+  try {
+    const payload=await fetchJson(`/api/services/${endpoint}?lat=${latlng.lat}&lon=${latlng.lng}&groups=${encodeURIComponent(groups.join(','))}`);
+    renderNearestServices(payload);
+  } catch(error) {
+    document.getElementById('service-results').innerHTML=`No se pudo consultar: ${escapeHtml(error.message)}`;
+  }
+}
+
+function renderNearestServices(payload) {
+  const container=document.getElementById('service-results');
+  const rows=payload.services||[];
+  if (!rows.length) { container.textContent='No se encontraron servicios para las categorías seleccionadas.'; return; }
+  container.innerHTML=`<div class=\"info-sub\">Origen: ${fmt(payload.origin.lat,5)}, ${fmt(payload.origin.lon,5)} · ${escapeHtml(payload.method || '')}</div>`;
+  rows.forEach(row => {
+    const item=document.createElement('div'); item.className='service-result';
+    const distance=row.distance_km ?? row.air_distance_km;
+    const travel=row.duration_minutes !== undefined ? `${fmt(row.duration_minutes,1)} min · ` : '';
+    item.innerHTML=`<strong><span class=\"service-dot\"></span>${escapeHtml(row.name || row.query_category)}</strong><br>${travel}${fmt(distance,2)} km <span class=\"small\">(${escapeHtml(row.query_category || '')})</span>`;
+    const button=document.createElement('button'); button.type='button'; button.textContent='Dibujar ruta';
+    button.addEventListener('click',()=>drawRouteTo(row)); item.appendChild(button); container.appendChild(item);
+  });
+  if (payload.warning) {
+    const warning=document.createElement('div'); warning.className='warning'; warning.textContent='OSRM no respondió; se muestran distancias en línea recta.'; container.appendChild(warning);
+  }
+}
+
+async function drawRouteTo(service) {
+  if (!state.serviceOrigin) return;
+  document.getElementById('service-status').textContent='Calculando ruta…';
+  const p=new URLSearchParams({from_lat:state.serviceOrigin.lat,from_lon:state.serviceOrigin.lon,to_lat:service.lat,to_lon:service.lon});
+  try {
+    const route=await fetchJson(`/api/route?${p}`);
+    clearRoute();
+    const latlngs=(route.geometry?.coordinates||[]).map(c=>[c[1],c[0]]);
+    state.routeLayer=L.polyline(latlngs,{pane:'routePane',weight:5,opacity:.9}).addTo(state.map);
+    state.routeMarkers=L.layerGroup([
+      L.circleMarker([state.serviceOrigin.lat,state.serviceOrigin.lon],{pane:'routePane',radius:7,color:'#fff',weight:2,fillColor:'#2563eb',fillOpacity:1}),
+      L.circleMarker([service.lat,service.lon],{pane:'routePane',radius:7,color:'#fff',weight:2,fillColor:'#dc2626',fillOpacity:1})
+    ]).addTo(state.map);
+    if (state.routeLayer.getBounds().isValid()) state.map.fitBounds(state.routeLayer.getBounds(),{padding:[30,30]});
+    document.getElementById('service-status').textContent=`Ruta: ${fmt(route.distance_km,2)} km · ${fmt(route.duration_minutes,1)} min.`;
+  } catch(error) {
+    document.getElementById('service-status').textContent=`No se pudo calcular la ruta: ${error.message}`;
+  }
+}
+
+function clearRoute() {
+  if (state.routeLayer) { state.map.removeLayer(state.routeLayer); state.routeLayer=null; }
+  if (state.routeMarkers) { state.map.removeLayer(state.routeMarkers); state.routeMarkers=null; }
 }
 
 async function queryPixel(ev) {
