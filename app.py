@@ -72,7 +72,7 @@ except Exception:  # pragma: no cover
 
 
 APP_TITLE = "Explorador de luces nocturnas de Paraguay"
-APP_BUILD = "2026-07-30-R6-SERVICIOS-RUTAS"
+APP_BUILD = "2026-07-30-R7-HOVER-SERVICIOS"
 DEFAULT_DATA_DIR = "Resultados_luces_nocturnas_Paraguay"
 WEB_MERCATOR = "EPSG:3857"
 WGS84 = "EPSG:4326"
@@ -1525,11 +1525,20 @@ INDEX_HTML = r"""
     .service-options { display:grid; grid-template-columns:1fr 1fr; gap:5px 8px; margin-top:8px; }
     .service-option { display:flex; align-items:center; gap:6px; font-size:11px; }
     .service-option input { width:auto; }
-    .service-result { border-top:1px solid #eef2f5; padding:8px 0; }
+    .service-result { border-top:1px solid #eef2f5; padding:9px 0; }
     .service-result:first-child { border-top:0; }
-    .service-result button { margin-top:5px; padding:5px 8px; font-size:10px; }
-    .service-dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; background:var(--accent); }
+    .service-result-head { display:flex; align-items:center; min-width:0; }
+    .service-result-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .service-result-row { display:flex; align-items:center; gap:10px; margin-top:5px; }
+    .service-result-meta { flex:1 1 auto; min-width:0; }
+    .service-result-route { flex:0 0 auto; margin:0 0 0 auto; padding:5px 9px; font-size:10px; white-space:nowrap; }
+    .service-dot { display:inline-block; flex:0 0 auto; width:9px; height:9px; border-radius:50%; margin-right:5px; background:var(--accent); }
     .leaflet-tooltip { font-size: 11px; border-radius: 7px; box-shadow: var(--shadow); }
+    .service-tooltip { max-width:260px; line-height:1.35; }
+    .leaflet-raster-pane, .leaflet-hotspot-pane, .leaflet-route-pane { pointer-events:none; }
+    .leaflet-services-pane { pointer-events:none; }
+    .leaflet-services-pane svg { pointer-events:none; }
+    .leaflet-services-pane .leaflet-interactive { pointer-events:auto; cursor:pointer; }
     .map-name-label {
       background: rgba(255,255,255,.92);
       border: 1px solid rgba(71,85,105,.34);
@@ -1650,6 +1659,7 @@ const state = {
   pendingRasterLayer: null,
   rasterToken: 0,
   adminLayer: null,
+  adminRenderer: null,
   nameLabelLayer: null,
   hotspotLayer: null,
   searchHighlight: null,
@@ -1665,6 +1675,7 @@ const state = {
   adminLayerCache: new Map(),
   labelRefreshTimer: null,
   servicesLayer: null,
+  servicesRenderer: null,
   serviceRequestToken: 0,
   serviceMoveTimer: null,
   serviceOrigin: null,
@@ -1775,8 +1786,14 @@ function createMapPanes() {
     state.map.createPane(name);
     state.map.getPane(name).style.zIndex = String(zIndex);
   }
+  // Las capas visuales de pantalla completa nunca deben bloquear el mouse.
+  state.map.getPane('rasterPane').style.pointerEvents = 'none';
+  state.map.getPane('hotspotPane').style.pointerEvents = 'none';
+  state.map.getPane('routePane').style.pointerEvents = 'none';
   state.map.getPane('labelTilePane').style.pointerEvents = 'none';
   state.map.getPane('nameLabelPane').style.pointerEvents = 'none';
+  // El pane de servicios deja pasar el mouse salvo sobre cada marcador SVG.
+  state.map.getPane('servicesPane').style.pointerEvents = 'none';
   // El resaltado de una búsqueda debe ser solo visual: no puede bloquear
   // mouseover/click de la capa administrativa que está debajo.
   state.map.getPane('searchPane').style.pointerEvents = 'none';
@@ -1786,6 +1803,12 @@ async function init() {
   state.config = await fetchJson('/api/config');
   state.map = L.map('map', {zoomControl:true, preferCanvas:true});
   createMapPanes();
+  // Un solo renderer administrativo evita canvases superpuestos después de
+  // cambiar repetidamente de nivel, departamento o métrica.
+  state.adminRenderer = L.canvas({pane:'adminPane', padding:.35, tolerance:8});
+  // Los servicios usan SVG: solo los círculos visibles capturan el mouse.
+  // Un canvas ocuparía todo el mapa y podría bloquear el hover administrativo.
+  state.servicesRenderer = L.svg({pane:'servicesPane', padding:.35});
   state.baseLayers = {
     osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {pane:'basePane', maxZoom:19, attribution:'© OpenStreetMap contributors'}),
     carto: L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {pane:'basePane', maxZoom:20, attribution:'© OpenStreetMap © CARTO'}),
@@ -2015,16 +2038,18 @@ async function loadRaster() {
 
 function pointRadius(value, domain) {
   value = Number(value);
-  if (!Number.isFinite(value)) return 3;
+  if (!Number.isFinite(value)) return 4;
   const span = Math.abs(domain.max - domain.min) || 1;
-  return Math.max(3, Math.min(10, 4 + Math.abs(value - domain.min) / span * 5));
+  return Math.max(4, Math.min(11, 4.5 + Math.abs(value - domain.min) / span * 5.5));
 }
 
 function buildAdminLayer(geojson, layerKey, metric, domain) {
-  const canvasRenderer = L.canvas({padding:.35});
+  const canvasRenderer = state.adminRenderer;
   return L.geoJSON(geojson, {
     pane:'adminPane',
     renderer:canvasRenderer,
+    interactive:true,
+    bubblingMouseEvents:false,
     style: feature => ({
       pane:'adminPane', color:'#52616f', weight:layerKey === 'departamentos' ? 1.3 : .8,
       fillColor:featureColor(feature.properties[metric], domain), fillOpacity:.58,
@@ -2033,6 +2058,7 @@ function buildAdminLayer(geojson, layerKey, metric, domain) {
       const value = Number(feature.properties[metric]);
       return L.circleMarker(latlng, {
         pane:'adminPane', renderer:canvasRenderer,
+        interactive:true, bubblingMouseEvents:false,
         radius:pointRadius(value, domain), color:'#fff', weight:.8,
         fillColor:featureColor(value,domain), fillOpacity:.88
       });
@@ -2092,8 +2118,13 @@ async function loadAdminLayer() {
     state.adminLayer = nextLayer;
     restyleAdminLayer(nextLayer, geojson, layerKey);
 
-    if (!state.map.hasLayer(nextLayer)) nextLayer.addTo(state.map);
+    // Limpia cualquier capa administrativa antigua que haya quedado adjunta
+    // por cambios rápidos o respuestas asíncronas fuera de orden.
+    for (const cachedLayer of state.adminLayerCache.values()) {
+      if (cachedLayer !== nextLayer && state.map.hasLayer(cachedLayer)) state.map.removeLayer(cachedLayer);
+    }
     if (previous && previous !== nextLayer && state.map.hasLayer(previous)) state.map.removeLayer(previous);
+    if (!state.map.hasLayer(nextLayer)) nextLayer.addTo(state.map);
     scheduleFeatureLabels();
     setStatus(`${geojson.meta?.count || geojson.features.length} elementos cargados${wasCached ? ' · desde caché' : ''}.`);
   } catch (error) {
@@ -2232,7 +2263,13 @@ function scheduleServicesLoad() {
 }
 
 async function loadServices() {
-  if (state.servicesLayer) { state.map.removeLayer(state.servicesLayer); state.servicesLayer = null; }
+  // Invalida SIEMPRE las solicitudes anteriores, incluso al apagar la capa,
+  // cambiar de zoom o dejar todas las categorías sin marcar.
+  const token = ++state.serviceRequestToken;
+  if (state.servicesLayer) {
+    state.map.removeLayer(state.servicesLayer);
+    state.servicesLayer = null;
+  }
   if (!state.config.services?.available || !document.getElementById('show-services').checked) {
     document.getElementById('service-status').textContent = '';
     return;
@@ -2242,31 +2279,65 @@ async function loadServices() {
     return;
   }
   const groups = selectedServiceGroups();
-  if (!groups.length) return;
-  const token = ++state.serviceRequestToken;
+  if (!groups.length) {
+    document.getElementById('service-status').textContent = 'Selecciona al menos una categoría.';
+    return;
+  }
   const b = state.map.getBounds();
   const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(',');
   document.getElementById('service-status').textContent = 'Cargando servicios visibles…';
   try {
     const payload = await fetchJson(`/api/services?bbox=${encodeURIComponent(bbox)}&groups=${encodeURIComponent(groups.join(','))}&limit=1500`);
     if (token !== state.serviceRequestToken) return;
-    const canvas = L.canvas({padding:.35});
     state.servicesLayer = L.geoJSON(payload, {
-      pane:'servicesPane', renderer:canvas,
+      pane:'servicesPane',
+      renderer:state.servicesRenderer,
+      interactive:true,
+      bubblingMouseEvents:false,
       pointToLayer:(feature,latlng) => {
         const group = serviceGroupForFeature(feature.properties || {});
         const [color,radius] = serviceMarkerStyle(group);
-        return L.circleMarker(latlng,{pane:'servicesPane',renderer:canvas,radius,color:'#fff',weight:1,fillColor:color,fillOpacity:.92});
+        return L.circleMarker(latlng, {
+          pane:'servicesPane', renderer:state.servicesRenderer,
+          interactive:true, bubblingMouseEvents:false,
+          radius, color:'#fff', weight:1.2,
+          fillColor:color, fillOpacity:.94
+        });
       },
       onEachFeature:(feature,layer) => {
-        const p=feature.properties||{};
-        const detail=[p.subcategory,p.district,p.department].filter(Boolean).join(' · ');
-        layer.bindPopup(`<strong>${escapeHtml(p.name || 'Servicio')}</strong><br><span class=\"small\">${escapeHtml(detail)}</span>`);
+        const p = feature.properties || {};
+        const group = serviceGroupForFeature(p);
+        const groupLabel = (state.config.services?.groups || []).find(x => x.key === group)?.label || group;
+        const detail = [groupLabel, p.subcategory, p.district, p.department].filter(Boolean).join(' · ');
+        const source = p.source ? `<br><span class="small">Fuente: ${escapeHtml(p.source)}</span>` : '';
+        const tooltip = `<strong>${escapeHtml(p.name || 'Servicio')}</strong><br><span class="small">${escapeHtml(detail)}</span>`;
+        const popup = `<strong>${escapeHtml(p.name || 'Servicio')}</strong><br><span class="small">${escapeHtml(detail)}</span>${source}`;
+        layer.bindTooltip(tooltip, {
+          sticky:true, direction:'top', opacity:.97,
+          pane:'nameLabelPane', className:'service-tooltip'
+        });
+        layer.bindPopup(popup, {autoPan:true, closeButton:true});
+
+        const baseRadius = typeof layer.getRadius === 'function' ? layer.getRadius() : null;
+        layer.on('mouseover', () => {
+          if (typeof layer.setStyle === 'function') layer.setStyle({weight:2.2, fillOpacity:1});
+          if (baseRadius !== null && typeof layer.setRadius === 'function') layer.setRadius(baseRadius + 1.5);
+          if (typeof layer.bringToFront === 'function') layer.bringToFront();
+        });
+        layer.on('mouseout', () => {
+          if (typeof layer.setStyle === 'function') layer.setStyle({weight:1.2, fillOpacity:.94});
+          if (baseRadius !== null && typeof layer.setRadius === 'function') layer.setRadius(baseRadius);
+        });
+        layer.on('click', ev => {
+          if (ev?.originalEvent) L.DomEvent.stopPropagation(ev.originalEvent);
+          layer.openPopup();
+        });
       }
     }).addTo(state.map);
-    const meta=payload.meta||{};
+    const meta = payload.meta || {};
     document.getElementById('service-status').textContent = `${meta.count || 0} servicios visibles${meta.truncated ? ' (límite alcanzado; acerca el mapa)' : ''}.`;
   } catch (error) {
+    if (token !== state.serviceRequestToken) return;
     document.getElementById('service-status').textContent = `Error cargando servicios: ${error.message}`;
   }
 }
@@ -2291,20 +2362,42 @@ async function queryNearestServices(latlng) {
 }
 
 function renderNearestServices(payload) {
-  const container=document.getElementById('service-results');
-  const rows=payload.services||[];
-  if (!rows.length) { container.textContent='No se encontraron servicios para las categorías seleccionadas.'; return; }
-  container.innerHTML=`<div class=\"info-sub\">Origen: ${fmt(payload.origin.lat,5)}, ${fmt(payload.origin.lon,5)} · ${escapeHtml(payload.method || '')}</div>`;
+  const container = document.getElementById('service-results');
+  const rows = payload.services || [];
+  if (!rows.length) {
+    container.textContent = 'No se encontraron servicios para las categorías seleccionadas.';
+    return;
+  }
+  container.innerHTML = `<div class="info-sub">Origen: ${fmt(payload.origin.lat,5)}, ${fmt(payload.origin.lon,5)} · ${escapeHtml(payload.method || '')}</div>`;
   rows.forEach(row => {
-    const item=document.createElement('div'); item.className='service-result';
-    const distance=row.distance_km ?? row.air_distance_km;
-    const travel=row.duration_minutes !== undefined ? `${fmt(row.duration_minutes,1)} min · ` : '';
-    item.innerHTML=`<strong><span class=\"service-dot\"></span>${escapeHtml(row.name || row.query_category)}</strong><br>${travel}${fmt(distance,2)} km <span class=\"small\">(${escapeHtml(row.query_category || '')})</span>`;
-    const button=document.createElement('button'); button.type='button'; button.textContent='Dibujar ruta';
-    button.addEventListener('click',()=>drawRouteTo(row)); item.appendChild(button); container.appendChild(item);
+    const item = document.createElement('div');
+    item.className = 'service-result';
+    const distance = row.distance_km ?? row.air_distance_km;
+    const travel = row.duration_minutes !== undefined ? `${fmt(row.duration_minutes,1)} min · ` : '';
+
+    const head = document.createElement('div');
+    head.className = 'service-result-head';
+    head.innerHTML = `<span class="service-dot"></span><strong class="service-result-name">${escapeHtml(row.name || row.query_category)}</strong>`;
+
+    const resultRow = document.createElement('div');
+    resultRow.className = 'service-result-row';
+    const meta = document.createElement('span');
+    meta.className = 'service-result-meta';
+    meta.innerHTML = `${travel}${fmt(distance,2)} km <span class="small">(${escapeHtml(row.query_category || '')})</span>`;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'service-result-route';
+    button.textContent = 'Dibujar ruta';
+    button.addEventListener('click', () => drawRouteTo(row));
+    resultRow.append(meta, button);
+    item.append(head, resultRow);
+    container.appendChild(item);
   });
   if (payload.warning) {
-    const warning=document.createElement('div'); warning.className='warning'; warning.textContent='OSRM no respondió; se muestran distancias en línea recta.'; container.appendChild(warning);
+    const warning = document.createElement('div');
+    warning.className = 'warning';
+    warning.textContent = 'OSRM no respondió; se muestran distancias en línea recta.';
+    container.appendChild(warning);
   }
 }
 
@@ -2316,10 +2409,10 @@ async function drawRouteTo(service) {
     const route=await fetchJson(`/api/route?${p}`);
     clearRoute();
     const latlngs=(route.geometry?.coordinates||[]).map(c=>[c[1],c[0]]);
-    state.routeLayer=L.polyline(latlngs,{pane:'routePane',weight:5,opacity:.9}).addTo(state.map);
+    state.routeLayer=L.polyline(latlngs,{pane:'routePane',weight:5,opacity:.9,interactive:false}).addTo(state.map);
     state.routeMarkers=L.layerGroup([
-      L.circleMarker([state.serviceOrigin.lat,state.serviceOrigin.lon],{pane:'routePane',radius:7,color:'#fff',weight:2,fillColor:'#2563eb',fillOpacity:1}),
-      L.circleMarker([service.lat,service.lon],{pane:'routePane',radius:7,color:'#fff',weight:2,fillColor:'#dc2626',fillOpacity:1})
+      L.circleMarker([state.serviceOrigin.lat,state.serviceOrigin.lon],{pane:'routePane',interactive:false,radius:7,color:'#fff',weight:2,fillColor:'#2563eb',fillOpacity:1}),
+      L.circleMarker([service.lat,service.lon],{pane:'routePane',interactive:false,radius:7,color:'#fff',weight:2,fillColor:'#dc2626',fillOpacity:1})
     ]).addTo(state.map);
     if (state.routeLayer.getBounds().isValid()) state.map.fitBounds(state.routeLayer.getBounds(),{padding:[30,30]});
     document.getElementById('service-status').textContent=`Ruta: ${fmt(route.distance_km,2)} km · ${fmt(route.duration_minutes,1)} min.`;
