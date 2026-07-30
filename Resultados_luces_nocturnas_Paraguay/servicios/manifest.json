@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "osm": "C:\\Users\\andre\\Downloads\\cache_servicios\\geofabrik_gpkg\\paraguay.gpkg",
+    "health_official": null,
+    "schools_official": null,
+    "population": "C:\\Users\\andre\\Downloads\\cache_servicios\\population\\worldpop_2025.tif"
+  },
+  "service_data": {
+    "count": 9550,
+    "files": {
+      "parquet": "servicios.parquet",
+      "gpkg": "servicios.gpkg",
+      "csv_gz": "servicios.csv.gz",
+      "geojson_gz": "servicios_web.geojson.gz"
+    },
+    "categories": [
+      {
+        "category": "bank",
+        "subcategory": "atm",
+        "count": 167
+      },
+      {
+        "category": "bank",
+        "subcategory": "bank",
+        "count": 416
+      },
+      {
+        "category": "education",
+        "subcategory": "college",
+        "count": 80
+      },
+      {
+        "category": "education",
+        "subcategory": "kindergarten",
+        "count": 102
+      },
+      {
+        "category": "education",
+        "subcategory": "school",
+        "count": 3282
+      },
+      {
+        "category": "education",
+        "subcategory": "university",
+        "count": 208
+      },
+      {
+        "category": "fire_station",
+        "subcategory": "fire_station",
+        "count": 82
+      },
+      {
+        "category": "health",
+        "subcategory": "clinic",
+        "count": 286
+      },
+      {
+        "category": "health",
+        "subcategory": "dentist",
+        "count": 234
+      },
+      {
+        "category": "health",
+        "subcategory": "doctors",
+        "count": 91
+      },
+      {
+        "category": "health",
+        "subcategory": "hospital",
+        "count": 282
+      },
+      {
+        "category": "market",
+        "subcategory": "market_place",
+        "count": 74
+      },
+      {
+        "category": "pharmacy",
+        "subcategory": "pharmacy",
+        "count": 892
+      },
+      {
+        "category": "police",
+        "subcategory": "police",
+        "count": 1227
+      },
+      {
+        "category": "supermarket",
+        "subcategory": "convenience",
+        "count": 1130
+      },
+      {
+        "category": "supermarket",
+        "subcategory": "mall",
+        "count": 187
+      },
+      {
+        "category": "supermarket",
+        "subcategory": "supermarket",
+        "count": 810
+      }
+    ]
+  },
+  "metrics": {
+    "localities": 6798,
+    "districts": 247,
+    "radii_km": [
+      5.0,
+      10.0,
+      20.0
+    ],
+    "population_year": 2025,
+    "population_analysis_resolution_m": 1000.0
+  },
+  "category_labels": {
+    "health": "Salud (categoría fuente)",
+    "education": "Educación",
+    "supermarket": "Supermercados",
+    "pharmacy": "Farmacias",
+    "bank": "Bancos y cajeros",
+    "fuel": "Combustible",
+    "police": "Policía",
+    "fire_station": "Bomberos",
+    "market": "Mercados"
+  },
+  "metric_group_labels": {
+    "health": "Establecimientos de salud",
+    "hospital": "Hospitales",
+    "primary_health": "Clínicas, centros, puestos y USF",
+    "education": "Educación",
+    "supermarket": "Supermercados",
+    "pharmacy": "Farmacias",
+    "bank": "Bancos y cajeros",
+    "fuel": "Combustible",
+    "police": "Policía",
+    "fire_station": "Bomberos",
+    "market": "Mercados"
+  },
+  "health_definition": {
+    "health": [
+      "clinic",
+      "health_centre",
+      "health_other",
+      "health_post",
+      "hospital",
+      "hospital_major",
+      "usf"
+    ],
+    "hospital": [
+      "hospital",
+      "hospital_major"
+    ],
+    "primary_health": [
+      "clinic",
+      "health_centre",
+      "health_post",
+      "usf"
+    ],
+    "excluded_from_health_access": [
+      "doctors",
+      "dentist"
+    ]
+  },
+  "notes": [
+    "Driving times are intentionally queried live through services_runtime.py; they are not bulk-precomputed.",
+    "The experimental investment score must be validated and should not be treated as financial advice.",
+    "OpenStreetMap completeness varies by location; official MSPBS/MEC files are preferred when supplied."
+  ]
+}
