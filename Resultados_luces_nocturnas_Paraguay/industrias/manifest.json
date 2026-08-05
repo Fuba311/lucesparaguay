@@ -1,0 +1,208 @@
+{
+  "schema_version": 2,
+  "sources": {
+    "openstreetmap_extract": "paraguay-latest-free.gpkg.zip (uploaded by user)",
+    "service_population_metrics": "servicios.zip (uploaded by user)",
+    "overpass_enrichment": false
+  },
+  "industry_points": {
+    "count": 4543,
+    "files": {
+      "csv_gz": "industrias.csv.gz",
+      "gpkg": "industrias.gpkg",
+      "parquet": null
+    },
+    "categories": [
+      {
+        "subcategory": "factory",
+        "sector": "chemicals_plastics",
+        "count": 2
+      },
+      {
+        "subcategory": "factory",
+        "sector": "construction_materials",
+        "count": 4
+      },
+      {
+        "subcategory": "factory",
+        "sector": "food_agro",
+        "count": 11
+      },
+      {
+        "subcategory": "factory",
+        "sector": "metal_machinery",
+        "count": 2
+      },
+      {
+        "subcategory": "factory",
+        "sector": "other",
+        "count": 15
+      },
+      {
+        "subcategory": "factory",
+        "sector": "textile",
+        "count": 2
+      },
+      {
+        "subcategory": "factory",
+        "sector": "waste_utilities",
+        "count": 4
+      },
+      {
+        "subcategory": "factory",
+        "sector": "wood",
+        "count": 2
+      },
+      {
+        "subcategory": "industrial_building",
+        "sector": "automotive",
+        "count": 3
+      },
+      {
+        "subcategory": "industrial_building",
+        "sector": "chemicals_plastics",
+        "count": 2
+      },
+      {
+        "subcategory": "industrial_building",
+        "sector": "energy",
+        "count": 2
+      },
+      {
+        "subcategory": "industrial_building",
+        "sector": "extractive",
+        "count": 1
+      },
+      {
+        "subcategory": "industrial_building",
+        "sector": "food_agro",
+        "count": 5
+      },
+      {
+        "subcategory": "industrial_building",
+        "sector": "logistics",
+        "count": 7
+      },
+      {
+        "subcategory": "industrial_building",
+        "sector": "metal_machinery",
+        "count": 7
+      },
+      {
+        "subcategory": "industrial_building",
+        "sector": "other",
+        "count": 2329
+      },
+      {
+        "subcategory": "industrial_building",
+        "sector": "textile",
+        "count": 1
+      },
+      {
+        "subcategory": "industrial_building",
+        "sector": "wood",
+        "count": 2
+      },
+      {
+        "subcategory": "industrial_zone",
+        "sector": "chemicals_plastics",
+        "count": 2
+      },
+      {
+        "subcategory": "industrial_zone",
+        "sector": "construction_materials",
+        "count": 6
+      },
+      {
+        "subcategory": "industrial_zone",
+        "sector": "food_agro",
+        "count": 17
+      },
+      {
+        "subcategory": "industrial_zone",
+        "sector": "other",
+        "count": 1655
+      },
+      {
+        "subcategory": "industrial_zone",
+        "sector": "wood",
+        "count": 1
+      },
+      {
+        "subcategory": "power_plant",
+        "sector": "energy",
+        "count": 1
+      },
+      {
+        "subcategory": "quarry",
+        "sector": "extractive",
+        "count": 222
+      },
+      {
+        "subcategory": "utility_waste",
+        "sector": "waste_utilities",
+        "count": 126
+      },
+      {
+        "subcategory": "warehouse",
+        "sector": "food_agro",
+        "count": 1
+      },
+      {
+        "subcategory": "warehouse",
+        "sector": "logistics",
+        "count": 110
+      },
+      {
+        "subcategory": "warehouse",
+        "sector": "metal_machinery",
+        "count": 1
+      }
+    ]
+  },
+  "industrial_zones": {
+    "count": 2050,
+    "total_area_ha": 14619.916468661462,
+    "files": {
+      "gpkg": "zonas_industriales.gpkg",
+      "geojson_gz": "zonas_industriales_web.geojson.gz"
+    }
+  },
+  "metrics": {
+    "localities": 6798,
+    "districts": 247,
+    "radii_km": [
+      5.0,
+      10.0,
+      20.0
+    ],
+    "combined_ranking": "ranking_crecimiento_servicios_industrias.csv.gz"
+  },
+  "feature_labels": {
+    "factory": "Fábricas y plantas",
+    "warehouse": "Depósitos y logística",
+    "industrial_building": "Edificios industriales",
+    "power_plant": "Plantas de energía",
+    "utility_waste": "Servicios industriales y residuos",
+    "quarry": "Canteras y extracción",
+    "industrial_zone": "Zonas industriales"
+  },
+  "group_labels": {
+    "factory": "Fábricas",
+    "warehouse": "Depósitos y logística",
+    "industrial_building": "Edificios industriales",
+    "power_plant": "Plantas de energía",
+    "utility_waste": "Servicios industriales y residuos",
+    "quarry": "Canteras",
+    "industrial_zone": "Zonas industriales",
+    "productive_site": "Sitios productivos",
+    "high_impact_site": "Sitios de mayor impacto potencial"
+  },
+  "notes": [
+    "Named factory/warehouse campuses with multiple footprints within 750 m were collapsed into one establishment point.",
+    "building=industrial without sufficient evidence remains industrial_building and is not presented as a confirmed factory.",
+    "landuse=industrial is an industrial-zone polygon, not necessarily an operating factory.",
+    "Factory names and sector classifications are based on available OpenStreetMap names/tags and conservative text rules.",
+    "Coverage varies by area; this is an investment-screening dataset, not an official industrial census."
+  ]
+}
