@@ -13,6 +13,9 @@ por ``luces_nocturnas_paraguay.py``:
 - cache/rasters/paraguay/viirs_YYYY.tif
 - cache/rasters/paraguay/cambio_abs_YYYY_YYYY.tif
 - cache/rasters/paraguay/cambio_pct_YYYY_YYYY.tif
+- servicios/servicios.csv.gz
+- industrias/industrias.csv.gz
+- industrias/zonas_industriales_web.geojson.gz
 
 No consulta Google Earth Engine. La aplicación solo visualiza los resultados ya
 calculados, por lo que es apropiada para subir a Render, Railway, Fly.io o un VPS.
@@ -62,7 +65,7 @@ from pyproj import Transformer
 from rasterio.enums import Resampling
 from rasterio.transform import from_bounds, rowcol, xy
 from rasterio.warp import reproject
-from shapely.geometry import box, mapping
+from shapely.geometry import box, mapping, shape
 from shapely.ops import transform as shapely_transform
 
 try:
@@ -72,7 +75,7 @@ except Exception:  # pragma: no cover
 
 
 APP_TITLE = "Explorador de luces nocturnas de Paraguay"
-APP_BUILD = "2026-07-30-R7-HOVER-SERVICIOS"
+APP_BUILD = "2026-08-05-R8-INDUSTRIAS"
 DEFAULT_DATA_DIR = "Resultados_luces_nocturnas_Paraguay"
 WEB_MERCATOR = "EPSG:3857"
 WGS84 = "EPSG:4326"
@@ -107,6 +110,24 @@ METRIC_LABELS: dict[str, str] = {
     "education_per_10k": "Centros educativos por 10.000 hab.",
     "supermarket_per_10k": "Supermercados por 10.000 hab.",
     "pharmacy_per_10k": "Farmacias por 10.000 hab.",
+    "industrial_opportunity_score": "Oportunidad industrial experimental (0–100)",
+    "industrial_residential_balance_score": "Balance industria–residencia experimental (0–100)",
+    "industrial_employment_access_score": "Acceso a empleo industrial (0–100)",
+    "industrial_concentration_score": "Concentración industrial (0–100)",
+    "industrial_exposure_score": "Exposición industrial potencial (0–100)",
+    "factory_nearest_km": "Fábrica más cercana (km)",
+    "productive_site_nearest_km": "Sitio productivo más cercano (km)",
+    "industrial_zone_nearest_km": "Zona industrial más cercana (km)",
+    "factory_count_10km": "Fábricas dentro de 10 km",
+    "productive_site_count_10km": "Sitios productivos dentro de 10 km",
+    "industrial_zone_area_ha_10km": "Área industrial cercana (ha)",
+    "factory_count": "Fábricas en el distrito",
+    "warehouse_count": "Depósitos/logística en el distrito",
+    "productive_site_count": "Sitios productivos en el distrito",
+    "factory_per_10k": "Fábricas por 10.000 hab.",
+    "productive_site_per_10k": "Sitios productivos por 10.000 hab.",
+    "industrial_zone_area_km2": "Área industrial del distrito (km²)",
+    "industrial_zone_pct": "Superficie industrial del distrito (%)",
 }
 
 TOOLTIP_FIELDS = [
@@ -267,7 +288,9 @@ class NightLightsStore:
         self.root = root
         self.gpkg = find_first(root, "areas_estudio_paraguay.gpkg")
         self.ranking_path = (
-            find_first(root, "ranking_crecimiento_y_servicios.csv.gz")
+            find_first(root, "ranking_crecimiento_servicios_industrias.csv.gz")
+            or find_first(root, "ranking_crecimiento_servicios_industrias.csv")
+            or find_first(root, "ranking_crecimiento_y_servicios.csv.gz")
             or find_first(root, "ranking_crecimiento_y_servicios.csv")
             or find_first(root, "ranking_crecimiento.csv.gz")
             or find_first(root, "ranking_crecimiento.csv")
@@ -982,6 +1005,13 @@ SERVICE_GROUPS: dict[str, tuple[str, set[str] | None]] = {
     "market": ("market", None),
     "doctor": ("health", {"doctors"}),
     "dentist": ("health", {"dentist"}),
+    "factory": ("industry", {"factory"}),
+    "warehouse": ("industry", {"warehouse"}),
+    "industrial_building": ("industry", {"industrial_building"}),
+    "power_plant": ("industry", {"power_plant"}),
+    "utility_waste": ("industry", {"utility_waste"}),
+    "quarry": ("industry", {"quarry"}),
+    "industrial_zone": ("industry", {"industrial_zone"}),
 }
 SERVICE_LABELS = {
     "hospital": "Hospitales",
@@ -994,6 +1024,13 @@ SERVICE_LABELS = {
     "police": "Policía",
     "fire_station": "Bomberos",
     "market": "Mercados",
+    "factory": "Fábricas y plantas",
+    "warehouse": "Depósitos y logística",
+    "industrial_building": "Edificios industriales (menor certeza)",
+    "power_plant": "Plantas de energía",
+    "utility_waste": "Servicios industriales y residuos",
+    "quarry": "Canteras y extracción",
+    "industrial_zone": "Centros de zonas industriales",
 }
 DEFAULT_SERVICE_GROUPS = ("hospital", "primary_health", "education", "supermarket", "pharmacy")
 
@@ -1011,23 +1048,42 @@ def haversine_km(lat: float, lon: float, lats: np.ndarray, lons: np.ndarray) -> 
 
 
 class ServiceStore:
+    """Carga servicios e industrias en una sola tabla ligera para la web."""
+
     def __init__(self, root: Path):
-        self.path = find_first(root, "servicios.csv.gz") or find_first(root, "servicios.csv")
-        self.available = self.path is not None
+        service_path = find_first(root, "servicios.csv.gz") or find_first(root, "servicios.csv")
+        industry_path = find_first(root, "industrias.csv.gz") or find_first(root, "industrias.csv")
+        self.paths = [p for p in (service_path, industry_path) if p is not None]
+        self.available = bool(self.paths)
         self.frame = pd.DataFrame()
         if not self.available:
             return
-        required = ["service_id", "category", "subcategory", "name", "source", "department", "district", "lat", "lon"]
-        self.frame = pd.read_csv(
-            self.path,
-            compression="infer",
-            low_memory=False,
-            usecols=lambda c: c in required,
-        )
-        for col in ("lat", "lon"):
+
+        required = [
+            "service_id", "category", "subcategory", "name", "source", "department", "district",
+            "lat", "lon", "sector", "risk_class", "confidence", "area_ha", "product", "raw_type",
+        ]
+        pieces: list[pd.DataFrame] = []
+        for path in self.paths:
+            frame = pd.read_csv(
+                path,
+                compression="infer",
+                low_memory=False,
+                usecols=lambda c: c in required,
+            )
+            if "category" not in frame.columns and "industrias" in path.name.lower():
+                frame["category"] = "industry"
+            pieces.append(frame)
+        self.frame = pd.concat(pieces, ignore_index=True, sort=False)
+        for col in ("lat", "lon", "area_ha"):
+            if col not in self.frame.columns:
+                self.frame[col] = np.nan
             self.frame[col] = pd.to_numeric(self.frame[col], errors="coerce", downcast="float")
         self.frame = self.frame.dropna(subset=["lat", "lon"]).reset_index(drop=True)
-        for col in ("service_id", "category", "subcategory", "name", "source", "department", "district"):
+        for col in (
+            "service_id", "category", "subcategory", "name", "source", "department", "district",
+            "sector", "risk_class", "confidence", "product", "raw_type",
+        ):
             if col not in self.frame.columns:
                 self.frame[col] = ""
             self.frame[col] = self.frame[col].fillna("").astype(str)
@@ -1043,6 +1099,8 @@ class ServiceStore:
         return {
             "available": self.available,
             "count": int(len(self.frame)),
+            "service_count": int(self.frame["category"].ne("industry").sum()) if self.available else 0,
+            "industry_count": int(self.frame["category"].eq("industry").sum()) if self.available else 0,
             "groups": [
                 {"key": key, "label": SERVICE_LABELS[key]}
                 for key in SERVICE_LABELS
@@ -1054,34 +1112,30 @@ class ServiceStore:
     def bbox(self, west: float, south: float, east: float, north: float, groups: list[str], limit: int) -> dict[str, Any]:
         if not self.available:
             return {"type": "FeatureCollection", "features": [], "meta": {"available": False}}
-        mask = (
-            self.frame["lon"].between(west, east)
-            & self.frame["lat"].between(south, north)
-        )
+        mask = self.frame["lon"].between(west, east) & self.frame["lat"].between(south, north)
         if groups:
-            group_mask = pd.Series(False, index=self.frame.index)
+            selected_groups = pd.Series(False, index=self.frame.index)
             for group in groups:
-                group_mask |= self.group_mask(group)
-            mask &= group_mask
+                selected_groups |= self.group_mask(group)
+            mask &= selected_groups
         selected = self.frame.loc[mask].copy()
         total = len(selected)
         if total > limit:
-            selected = selected.head(limit)
+            # Named/high-confidence records first; generic industrial buildings last.
+            selected["_named"] = selected["name"].ne("").astype(int)
+            selected["_confidence"] = selected["confidence"].map({"high": 3, "medium": 2, "low": 1}).fillna(0)
+            selected = selected.sort_values(["_confidence", "_named"], ascending=False).head(limit)
         features = []
-        for row in selected.itertuples(index=False):
-            logical_group = next((g for g in groups if bool(self.group_mask(g).iloc[row.Index]) ), None) if False else None
+        property_cols = [
+            "service_id", "category", "subcategory", "name", "source", "department", "district",
+            "sector", "risk_class", "confidence", "area_ha", "product", "raw_type",
+        ]
+        for _, row in selected.iterrows():
+            properties = {key: row.get(key) for key in property_cols}
             features.append({
                 "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [float(row.lon), float(row.lat)]},
-                "properties": clean_record({
-                    "service_id": row.service_id,
-                    "category": row.category,
-                    "subcategory": row.subcategory,
-                    "name": row.name,
-                    "source": row.source,
-                    "department": row.department,
-                    "district": row.district,
-                }),
+                "geometry": {"type": "Point", "coordinates": [float(row["lon"]), float(row["lat"])]},
+                "properties": clean_record(properties),
             })
         return {
             "type": "FeatureCollection",
@@ -1108,8 +1162,59 @@ class ServiceStore:
                     "lat": row["lat"],
                     "lon": row["lon"],
                     "air_distance_km": float(distances[int(pos)]),
+                    "sector": row.get("sector"),
+                    "risk_class": row.get("risk_class"),
+                    "confidence": row.get("confidence"),
+                    "area_ha": row.get("area_ha"),
+                    "product": row.get("product"),
+                    "raw_type": row.get("raw_type"),
                 }))
         return {"origin": {"lat": lat, "lon": lon}, "method": "air", "candidates": rows}
+
+
+class IndustrialZoneStore:
+    """Mantiene polígonos industriales simplificados y los filtra por bbox."""
+
+    def __init__(self, root: Path):
+        self.path = find_first(root, "zonas_industriales_web.geojson.gz") or find_first(root, "zonas_industriales_web.geojson")
+        self.available = self.path is not None
+        self.features: list[dict[str, Any]] = []
+        self.bounds: list[tuple[float, float, float, float]] = []
+        if not self.available:
+            return
+        opener = gzip.open if self.path.suffix.lower() == ".gz" else open
+        with opener(self.path, "rt", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        for feature in payload.get("features", []):
+            try:
+                geom = shape(feature.get("geometry"))
+                if geom.is_empty:
+                    continue
+                self.features.append(feature)
+                self.bounds.append(tuple(float(x) for x in geom.bounds))
+            except Exception:
+                continue
+
+    def public_config(self) -> dict[str, Any]:
+        return {"available": self.available, "count": len(self.features)}
+
+    def bbox(self, west: float, south: float, east: float, north: float, limit: int = 1000) -> dict[str, Any]:
+        if not self.available:
+            return {"type": "FeatureCollection", "features": [], "meta": {"available": False}}
+        selected: list[dict[str, Any]] = []
+        total = 0
+        for feature, bounds in zip(self.features, self.bounds):
+            minx, miny, maxx, maxy = bounds
+            if maxx < west or minx > east or maxy < south or miny > north:
+                continue
+            total += 1
+            if len(selected) < limit:
+                selected.append(feature)
+        return {
+            "type": "FeatureCollection",
+            "features": selected,
+            "meta": {"available": True, "count": len(selected), "total_in_bbox": total, "truncated": total > limit},
+        }
 
 
 @lru_cache(maxsize=512)
@@ -1182,6 +1287,7 @@ def route_between(from_lat: float, from_lon: float, to_lat: float, to_lon: float
 DATA_DIR = locate_data_dir()
 STORE = NightLightsStore(DATA_DIR)
 SERVICES = ServiceStore(DATA_DIR)
+INDUSTRIAL_ZONES = IndustrialZoneStore(DATA_DIR)
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
 
@@ -1280,7 +1386,14 @@ def render_raster_tile(layer_key: str, z: int, x: int, y: int) -> bytes:
 
 @app.get("/health")
 def health() -> Response:
-    return jsonify({"status": "ok", "build": APP_BUILD, "data_dir": str(DATA_DIR), "rasters": len(STORE.rasters), "services": len(SERVICES.frame) if SERVICES.available else 0})
+    return jsonify({
+        "status": "ok", "build": APP_BUILD, "data_dir": str(DATA_DIR),
+        "rasters": len(STORE.rasters),
+        "services": int(SERVICES.frame["category"].ne("industry").sum()) if SERVICES.available else 0,
+        "services_and_industries": len(SERVICES.frame) if SERVICES.available else 0,
+        "industries": int(SERVICES.frame["category"].eq("industry").sum()) if SERVICES.available else 0,
+        "industrial_zones": len(INDUSTRIAL_ZONES.features) if INDUSTRIAL_ZONES.available else 0,
+    })
 
 
 @app.get("/api/config")
@@ -1312,6 +1425,7 @@ def api_config() -> Response:
             "departments": STORE.department_names(),
             "data_dir_name": DATA_DIR.name,
             "services": SERVICES.public_config(),
+            "industrial_zones": INDUSTRIAL_ZONES.public_config(),
         }
     )
 
@@ -1396,6 +1510,18 @@ def api_services() -> Response:
     groups = [g for g in request.args.get("groups", "").split(",") if g in SERVICE_GROUPS]
     limit = min(max(int(request.args.get("limit", "1500")), 1), 3000)
     return jsonify(SERVICES.bbox(west, south, east, north, groups, limit))
+
+
+@app.get("/api/industrial-zones")
+def api_industrial_zones() -> Response:
+    if not INDUSTRIAL_ZONES.available:
+        return jsonify({"type": "FeatureCollection", "features": [], "meta": {"available": False}})
+    try:
+        west, south, east, north = [float(x) for x in request.args.get("bbox", "").split(",")]
+    except Exception:
+        return jsonify({"error": "bbox debe ser west,south,east,north"}), 400
+    limit = min(max(int(request.args.get("limit", "1000")), 1), 2000)
+    return jsonify(INDUSTRIAL_ZONES.bbox(west, south, east, north, limit))
 
 
 @app.get("/api/services/nearest")
@@ -1523,6 +1649,7 @@ INDEX_HTML = r"""
     .search-selection-actions button { width: 100%; background: #fff7ed; color: #9a4d00; border-color: #fed7aa; }
     .search-selection-actions button:hover { background: #ffedd5; }
     .service-options { display:grid; grid-template-columns:1fr 1fr; gap:5px 8px; margin-top:8px; }
+    .service-section-title { grid-column:1 / -1; margin-top:7px; padding-top:7px; border-top:1px solid #eef2f5; color:var(--muted); font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.05em; }
     .service-option { display:flex; align-items:center; gap:6px; font-size:11px; }
     .service-option input { width:auto; }
     .service-result { border-top:1px solid #eef2f5; padding:9px 0; }
@@ -1615,16 +1742,17 @@ INDEX_HTML = r"""
     </div>
 
     <div class="card" id="services-card">
-      <h2>Servicios y tiempos de viaje</h2>
-      <div class="check-row"><input id="show-services" type="checkbox"><span>Mostrar servicios en el mapa</span></div>
+      <h2>Servicios, industrias y tiempos de viaje</h2>
+      <div class="check-row"><input id="show-services" type="checkbox"><span>Mostrar servicios e industrias en el mapa</span></div>
       <div id="service-options" class="service-options"></div>
+      <div class="check-row"><input id="show-industrial-zones" type="checkbox"><span>Mostrar polígonos de zonas industriales</span></div>
       <div class="check-row"><input id="driving-times" type="checkbox" checked><span>Calcular tiempos reales en auto al hacer clic</span></div>
       <div class="row" style="margin-top:9px">
         <button id="reload-services" class="secondary" type="button">Actualizar servicios</button>
         <button id="clear-route" class="secondary" type="button">Quitar ruta</button>
       </div>
       <div id="service-status" class="status"></div>
-      <div id="service-results" class="small">Haz clic en el mapa para buscar los servicios más cercanos.</div>
+      <div id="service-results" class="small">Haz clic en el mapa para buscar los servicios o industrias seleccionados más cercanos.</div>
     </div>
 
     <div class="card">
@@ -1643,7 +1771,7 @@ INDEX_HTML = r"""
       <ol id="top-list"></ol>
     </div>
 
-    <div class="small">Los años parciales pueden aparecer en las series, pero el script principal los excluye de los rankings frente a años completos.</div>
+    <div class="small">Los años parciales pueden aparecer en las series, pero el script principal los excluye de los rankings. Las capas de industrias dependen de la cobertura de OpenStreetMap y no constituyen un censo oficial.</div>
   </aside>
   <main id="map"></main>
 </div>
@@ -1676,6 +1804,8 @@ const state = {
   labelRefreshTimer: null,
   servicesLayer: null,
   servicesRenderer: null,
+  industrialZonesLayer: null,
+  industrialZoneRequestToken: 0,
   serviceRequestToken: 0,
   serviceMoveTimer: null,
   serviceOrigin: null,
@@ -1776,6 +1906,7 @@ function createMapPanes() {
     rasterPane: 300,
     hotspotPane: 360,
     adminPane: 420,
+    industrialZonesPane: 450,
     servicesPane: 500,
     routePane: 560,
     labelTilePane: 600,
@@ -1790,6 +1921,7 @@ function createMapPanes() {
   state.map.getPane('rasterPane').style.pointerEvents = 'none';
   state.map.getPane('hotspotPane').style.pointerEvents = 'none';
   state.map.getPane('routePane').style.pointerEvents = 'none';
+  state.map.getPane('industrialZonesPane').style.pointerEvents = 'none';
   state.map.getPane('labelTilePane').style.pointerEvents = 'none';
   state.map.getPane('nameLabelPane').style.pointerEvents = 'none';
   // El pane de servicios deja pasar el mouse salvo sobre cada marcador SVG.
@@ -1864,7 +1996,16 @@ function fillServiceOptions() {
     document.getElementById('services-card').style.display = 'none';
     return;
   }
+  const industryKeys = new Set(['factory','warehouse','industrial_building','power_plant','utility_waste','quarry','industrial_zone']);
+  let insertedIndustryTitle = false;
   for (const group of cfg.groups || []) {
+    if (industryKeys.has(group.key) && !insertedIndustryTitle) {
+      const title = document.createElement('div');
+      title.className = 'service-section-title';
+      title.textContent = 'Industrias';
+      wrapper.appendChild(title);
+      insertedIndustryTitle = true;
+    }
     const label = document.createElement('label');
     label.className = 'service-option';
     const input = document.createElement('input');
@@ -1873,6 +2014,8 @@ function fillServiceOptions() {
     const span = document.createElement('span'); span.textContent = group.label;
     label.append(input, span); wrapper.appendChild(label);
   }
+  const zoneToggle = document.getElementById('show-industrial-zones');
+  if (zoneToggle) zoneToggle.closest('.check-row').style.display = state.config.industrial_zones?.available ? '' : 'none';
 }
 
 function selectedServiceGroups() {
@@ -1916,12 +2059,14 @@ function bindEvents() {
     await loadAdminLayer();
     await loadHotspots();
     await loadServices();
+    await loadIndustrialZones();
     await updateTopList();
   });
-  document.getElementById('show-services').addEventListener('change', loadServices);
-  document.getElementById('reload-services').addEventListener('click', loadServices);
+  document.getElementById('show-services').addEventListener('change', async () => { await loadServices(); await loadIndustrialZones(); });
+  document.getElementById('reload-services').addEventListener('click', async () => { await loadServices(); await loadIndustrialZones(); });
   document.getElementById('clear-route').addEventListener('click', clearRoute);
   document.querySelectorAll('.service-category').forEach(el => el.addEventListener('change', loadServices));
+  document.getElementById('show-industrial-zones').addEventListener('change', loadIndustrialZones);
 
   document.getElementById('clear-search-selection').addEventListener('click', () => clearSearchHighlight());
 
@@ -2204,6 +2349,14 @@ function showFeatureInfo(p, selected) {
       <div class="metric-box"><span>Población estimada</span><strong>${fmt(p.population ?? p.population_est,0)}</strong></div>
       <div class="metric-box"><span>Hospitales / 10k</span><strong>${fmt(p.hospital_per_10k)}</strong></div>
     </div>` : ''}
+    ${(p.industrial_employment_access_score !== null && p.industrial_employment_access_score !== undefined) ? `<h2 style="margin-top:12px">Industrias</h2><div class="metrics-grid">
+      <div class="metric-box"><span>Acceso a empleo industrial</span><strong>${fmt(p.industrial_employment_access_score)}</strong></div>
+      <div class="metric-box"><span>Exposición potencial</span><strong>${fmt(p.industrial_exposure_score)}</strong></div>
+      <div class="metric-box"><span>Fábrica cercana</span><strong>${fmt(p.factory_nearest_km)} km</strong></div>
+      <div class="metric-box"><span>Zona industrial cercana</span><strong>${fmt(p.industrial_zone_nearest_km)} km</strong></div>
+      <div class="metric-box"><span>Fábricas / sitios</span><strong>${fmt(p.factory_count ?? p.factory_count_10km,0)} / ${fmt(p.productive_site_count ?? p.productive_site_count_10km,0)}</strong></div>
+      <div class="metric-box"><span>Área industrial</span><strong>${fmt(p.industrial_zone_area_km2 ?? p.industrial_zone_area_ha_10km,1)} ${p.industrial_zone_area_km2 !== null && p.industrial_zone_area_km2 !== undefined ? 'km²' : 'ha'}</strong></div>
+    </div>` : ''}
     ${p.advertencia ? `<div class="warning">${escapeHtml(p.advertencia)}</div>` : ''}`;
   document.getElementById('feature-info').innerHTML = html;
 }
@@ -2245,6 +2398,7 @@ function serviceGroupForFeature(p) {
     if (['hospital','hospital_major'].includes(p.subcategory)) return 'hospital';
     if (['clinic','health_centre','health_post','usf'].includes(p.subcategory)) return 'primary_health';
   }
+  if (p.category === 'industry') return p.subcategory || 'industrial_building';
   return p.category;
 }
 
@@ -2252,14 +2406,19 @@ function serviceMarkerStyle(group) {
   const styles = {
     hospital:['#b91c1c',7], primary_health:['#dc2626',6], education:['#7c3aed',6],
     supermarket:['#15803d',6], pharmacy:['#db2777',6], bank:['#1d4ed8',6], fuel:['#a16207',6],
-    police:['#334155',6], fire_station:['#ea580c',6], market:['#0f766e',6]
+    police:['#334155',6], fire_station:['#ea580c',6], market:['#0f766e',6],
+    factory:['#c2410c',7], warehouse:['#92400e',6], industrial_building:['#b45309',5],
+    power_plant:['#ca8a04',7], utility_waste:['#57534e',6], quarry:['#475569',6], industrial_zone:['#ea580c',6]
   };
   return styles[group] || ['#475569',5];
 }
 
 function scheduleServicesLoad() {
   clearTimeout(state.serviceMoveTimer);
-  state.serviceMoveTimer = setTimeout(loadServices, 180);
+  state.serviceMoveTimer = setTimeout(() => {
+    loadServices();
+    loadIndustrialZones();
+  }, 180);
 }
 
 async function loadServices() {
@@ -2308,8 +2467,8 @@ async function loadServices() {
         const p = feature.properties || {};
         const group = serviceGroupForFeature(p);
         const groupLabel = (state.config.services?.groups || []).find(x => x.key === group)?.label || group;
-        const detail = [groupLabel, p.subcategory, p.district, p.department].filter(Boolean).join(' · ');
-        const source = p.source ? `<br><span class="small">Fuente: ${escapeHtml(p.source)}</span>` : '';
+        const detail = [groupLabel, p.product || p.sector, p.district, p.department].filter(Boolean).join(' · ');
+        const source = p.source ? `<br><span class="small">Fuente: ${escapeHtml(p.source)}${p.confidence ? ` · certeza ${escapeHtml(p.confidence)}` : ''}${Number(p.area_ha) > 0 ? ` · ${fmt(p.area_ha,1)} ha` : ''}</span>` : '';
         const tooltip = `<strong>${escapeHtml(p.name || 'Servicio')}</strong><br><span class="small">${escapeHtml(detail)}</span>`;
         const popup = `<strong>${escapeHtml(p.name || 'Servicio')}</strong><br><span class="small">${escapeHtml(detail)}</span>${source}`;
         layer.bindTooltip(tooltip, {
@@ -2339,6 +2498,39 @@ async function loadServices() {
   } catch (error) {
     if (token !== state.serviceRequestToken) return;
     document.getElementById('service-status').textContent = `Error cargando servicios: ${error.message}`;
+  }
+}
+
+function industrialZoneStyle(feature) {
+  const type = feature?.properties?.zone_type || 'industrial';
+  if (type === 'quarry') return {color:'#475569',weight:1.2,fillColor:'#64748b',fillOpacity:.16,interactive:false};
+  if (type === 'landfill') return {color:'#57534e',weight:1.2,fillColor:'#78716c',fillOpacity:.16,interactive:false};
+  return {color:'#c2410c',weight:1.3,fillColor:'#f97316',fillOpacity:.12,interactive:false};
+}
+
+async function loadIndustrialZones() {
+  const token = ++state.industrialZoneRequestToken;
+  if (state.industrialZonesLayer) {
+    state.map.removeLayer(state.industrialZonesLayer);
+    state.industrialZonesLayer = null;
+  }
+  const enabled = state.config.industrial_zones?.available
+    && document.getElementById('show-services').checked
+    && document.getElementById('show-industrial-zones').checked;
+  if (!enabled || state.map.getZoom() < 7) return;
+  const b = state.map.getBounds();
+  const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(',');
+  try {
+    const payload = await fetchJson(`/api/industrial-zones?bbox=${encodeURIComponent(bbox)}&limit=1200`);
+    if (token !== state.industrialZoneRequestToken) return;
+    state.industrialZonesLayer = L.geoJSON(payload, {
+      pane:'industrialZonesPane',
+      interactive:false,
+      style:industrialZoneStyle,
+    }).addTo(state.map);
+  } catch (error) {
+    if (token !== state.industrialZoneRequestToken) return;
+    console.warn('No se pudieron cargar zonas industriales', error);
   }
 }
 
@@ -2383,7 +2575,8 @@ function renderNearestServices(payload) {
     resultRow.className = 'service-result-row';
     const meta = document.createElement('span');
     meta.className = 'service-result-meta';
-    meta.innerHTML = `${travel}${fmt(distance,2)} km <span class="small">(${escapeHtml(row.query_category || '')})</span>`;
+    const extra = [row.product || row.sector, row.risk_class ? `riesgo ${row.risk_class}` : ''].filter(Boolean).join(' · ');
+    meta.innerHTML = `${travel}${fmt(distance,2)} km <span class="small">(${escapeHtml(row.query_category || '')})${extra ? ` · ${escapeHtml(extra)}` : ''}</span>`;
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'service-result-route';
