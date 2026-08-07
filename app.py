@@ -80,7 +80,7 @@ except Exception:  # pragma: no cover
 
 
 APP_TITLE = "Explorador de luces nocturnas de Paraguay"
-APP_BUILD = "2026-08-07-R10-MENU-COLAPSABLE-LATEST"
+APP_BUILD = "2026-08-06-R9-LOTES-SQL-EVALUACION"
 DEFAULT_DATA_DIR = "Resultados_luces_nocturnas_Paraguay"
 WEB_MERCATOR = "EPSG:3857"
 WGS84 = "EPSG:4326"
@@ -2207,51 +2207,13 @@ INDEX_HTML = r"""
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; color: var(--ink); background: var(--bg); }
-    #app { height: 100%; position: relative; overflow: hidden; }
-    #map { position: absolute; inset: 0; height: 100%; width: 100%; background: #dbe4ec; }
-    #menu-toggle {
-      position: fixed; top: 12px; left: 12px; z-index: 2300;
-      width: 46px; height: 46px; padding: 0; border-radius: 10px;
-      display: flex; align-items: center; justify-content: center;
-      background: var(--accent); color: #fff; border: 1px solid rgba(255,255,255,.28);
-      box-shadow: 0 8px 22px rgba(15,23,42,.22); font-size: 23px; line-height: 1;
-    }
-    #menu-toggle:hover { filter: brightness(.96); }
-    #menu-toggle:focus-visible { outline: 3px solid rgba(255,255,255,.9); outline-offset: 2px; }
-    #sidebar {
-      position: fixed; top: 68px; left: 12px; z-index: 2200;
-      width: min(390px, calc(100vw - 24px)); max-height: calc(100vh - 80px);
-      overflow-y: auto; overflow-x: hidden; background: var(--panel);
-      border: 1px solid var(--line); border-radius: 14px; padding: 12px;
-      box-shadow: 0 14px 34px rgba(15,23,42,.20);
-      opacity: 1; visibility: visible; transform: translateY(0);
-      transition: opacity .16s ease, transform .16s ease, visibility .16s ease;
-    }
-    #sidebar.menu-closed { opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(-8px); }
-    .sidebar-head { padding: 2px 3px 9px; border-bottom: 1px solid #eef2f5; margin-bottom: 6px; }
-    .sidebar-head h1 { font-size: 18px; margin-bottom: 3px; }
-    .sidebar-head .subtitle { margin: 5px 0 0; font-size: 11px; }
-    .menu-section { border: 0; border-bottom: 1px solid #edf1f5; margin: 0; background: #fff; }
-    .menu-section:last-of-type { border-bottom: 0; }
-    .menu-section > summary {
-      position: relative; list-style: none; cursor: pointer; user-select: none;
-      padding: 12px 34px 12px 4px; margin: 0;
-      font-size: 13px; font-weight: 800; color: var(--ink);
-    }
-    .menu-section > summary::-webkit-details-marker { display: none; }
-    .menu-section > summary::after {
-      content: '⌄'; position: absolute; right: 7px; top: 50%;
-      transform: translateY(-54%); color: var(--muted); font-size: 18px; font-weight: 700;
-      transition: transform .14s ease;
-    }
-    .menu-section[open] > summary::after { transform: translateY(-45%) rotate(180deg); }
-    .menu-section > summary:hover { color: var(--accent); }
-    .menu-section-body { padding: 0 4px 13px; }
-    .menu-footnote { padding: 10px 4px 2px; }
+    #app { height: 100%; display: grid; grid-template-columns: 380px 1fr; }
+    #sidebar { height: 100%; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line); padding: 18px; z-index: 1000; }
+    #map { height: 100%; width: 100%; background: #dbe4ec; }
     h1 { font-size: 22px; line-height: 1.15; margin: 0 0 6px; letter-spacing: -0.02em; }
     h2 { font-size: 15px; margin: 0 0 10px; }
     .subtitle { color: var(--muted); font-size: 12.5px; line-height: 1.45; margin-bottom: 14px; }
-    .card { border: 1px solid var(--line); border-radius: 12px; padding: 13px; margin-bottom: 12px; background: #fff; }
+    .card { border: 1px solid var(--line); border-radius: 12px; padding: 13px; margin-bottom: 12px; background: #fff; box-shadow: 0 2px 8px rgba(15,23,42,.035); }
     label { display: block; font-size: 12px; font-weight: 700; margin: 9px 0 5px; }
     select, input[type="text"], input[type="number"], input[type="password"], textarea { width: 100%; border: 1px solid #cfd8e1; border-radius: 8px; padding: 8px 9px; background: #fff; color: var(--ink); }
     input[type="text"]:focus, input[type="number"]:focus, input[type="password"]:focus, textarea:focus, select:focus { outline: 2px solid rgba(30,93,168,.16); border-color: #75a2d1; }
@@ -2346,143 +2308,134 @@ INDEX_HTML = r"""
     .map-name-label::before { display: none; }
     .leaflet-control-attribution { font-size: 9px; }
     @media (max-width: 900px) {
-      #menu-toggle { top: 10px; left: 10px; width: 44px; height: 44px; }
-      #sidebar { top: 64px; left: 10px; width: calc(100vw - 20px); max-height: calc(100vh - 74px); padding: 10px; }
-      .service-options { grid-template-columns: 1fr; }
+      #app { grid-template-columns: 1fr; grid-template-rows: 48% 52%; }
+      #sidebar { border-right: 0; border-bottom: 1px solid var(--line); padding: 12px; }
     }
   </style>
 </head>
 <body>
 <div id="app">
-  <button id="menu-toggle" type="button" aria-label="Abrir o cerrar menú" aria-expanded="true" title="Abrir/cerrar menú">⚙</button>
   <aside id="sidebar">
-    <div class="sidebar-head">
-      <h1>{{ title }}</h1>
-      <div style="display:inline-block;margin:3px 0 2px;padding:3px 7px;border-radius:999px;background:#e8f4ff;color:#075985;font-size:9px;font-weight:800;letter-spacing:.03em">VERSIÓN {{ build }}</div>
-      <div class="subtitle">Luces nocturnas, servicios, industrias y evaluación territorial.</div>
+    <h1>{{ title }}</h1>
+    <div style="display:inline-block;margin:5px 0 10px;padding:4px 8px;border-radius:999px;background:#e8f4ff;color:#075985;font-size:10px;font-weight:800;letter-spacing:.03em">VERSIÓN {{ build }}</div>
+    <div class="subtitle">Radiancia VIIRS anual ponderada (nW/cm²/sr). La luminosidad es un indicador indirecto de actividad y urbanización, no una prueba de valorización inmobiliaria.</div>
+
+    <div class="card">
+      <h2>Buscar cualquier zona</h2>
+      <div class="search-wrap">
+        <input id="search-input" type="text" placeholder="Ej.: San Bernardino, Yby Yaú, Caaguazú…" autocomplete="off">
+        <div id="search-results"></div>
+      </div>
+      <div id="search-selection-actions" class="search-selection-actions">
+        <button id="clear-search-selection" type="button" class="secondary">Quitar selección buscada</button>
+      </div>
+      <div class="small" style="margin-top:7px">Busca departamentos, distritos, ciudades, pueblos y localidades. Usa “Quitar selección” o la tecla Esc para volver al hover normal.</div>
     </div>
 
-    <details class="menu-section" open>
-      <summary>Buscar cualquier zona</summary>
-      <div class="menu-section-body">
-        <div class="search-wrap">
-          <input id="search-input" type="text" placeholder="Ej.: San Bernardino, Yby Yaú, Caaguazú…" autocomplete="off">
-          <div id="search-results"></div>
-        </div>
-        <div id="search-selection-actions" class="search-selection-actions">
-          <button id="clear-search-selection" type="button" class="secondary">Quitar selección buscada</button>
-        </div>
-        <div class="small" style="margin-top:7px">Busca departamentos, distritos, ciudades, pueblos y localidades. Usa “Quitar selección” o Esc para volver al hover normal.</div>
+    <div class="card">
+      <h2>Visualización</h2>
+      <label for="base-map">Mapa base</label>
+      <select id="base-map">
+        <option value="osm">OpenStreetMap</option>
+        <option value="carto">Carto claro</option>
+        <option value="dark">Carto oscuro</option>
+      </select>
+
+      <label for="raster-layer">Capa de píxeles VIIRS</label>
+      <select id="raster-layer"></select>
+      <label for="opacity">Opacidad del raster: <span id="opacity-value">72%</span></label>
+      <input id="opacity" type="range" min="0" max="100" value="72">
+      <div id="raster-legend" class="legend-bar"></div>
+      <div class="legend-labels"><span id="legend-min">Bajo</span><span id="legend-mid">0</span><span id="legend-max">Alto</span></div>
+
+      <label for="admin-layer">Capa administrativa / localidades</label>
+      <select id="admin-layer"></select>
+      <label for="metric">Métrica para colorear y ranquear</label>
+      <select id="metric"></select>
+      <label for="department">Enfocar departamento</label>
+      <select id="department"><option value="">Todo Paraguay</option></select>
+
+      <div class="check-row"><input id="show-labels" type="checkbox" checked><span>Mostrar nombres claros sobre el raster</span></div>
+      <div class="check-row"><input id="show-hotspots" type="checkbox"><span>Mapa de calor de hotspots del raster</span></div>
+      <label for="hotspot-percentile">Hotspots: percentil <span id="hotspot-label">98.5</span></label>
+      <input id="hotspot-percentile" type="range" min="90" max="99.8" step="0.1" value="98.5">
+      <div class="row" style="margin-top:10px">
+        <button id="reset-view" class="secondary">Vista nacional</button>
+        <button id="reload">Actualizar capas</button>
       </div>
-    </details>
+      <div id="status" class="status"></div>
+    </div>
 
-    <details class="menu-section" open>
-      <summary>Visualización</summary>
-      <div class="menu-section-body">
-        <label for="base-map">Mapa base</label>
-        <select id="base-map">
-          <option value="osm">OpenStreetMap</option>
-          <option value="carto">Carto claro</option>
-          <option value="dark">Carto oscuro</option>
-        </select>
-        <label for="raster-layer">Capa de píxeles VIIRS</label>
-        <select id="raster-layer"></select>
-        <label for="opacity">Opacidad del raster: <span id="opacity-value">72%</span></label>
-        <input id="opacity" type="range" min="0" max="100" value="72">
-        <div id="raster-legend" class="legend-bar"></div>
-        <div class="legend-labels"><span id="legend-min">Bajo</span><span id="legend-mid">0</span><span id="legend-max">Alto</span></div>
-        <label for="admin-layer">Capa administrativa / localidades</label>
-        <select id="admin-layer"></select>
-        <label for="metric">Métrica para colorear y ranquear</label>
-        <select id="metric"></select>
-        <label for="department">Enfocar departamento</label>
-        <select id="department"><option value="">Todo Paraguay</option></select>
-        <div class="check-row"><input id="show-labels" type="checkbox" checked><span>Mostrar nombres claros sobre el raster</span></div>
-        <div class="check-row"><input id="show-hotspots" type="checkbox"><span>Mapa de calor de hotspots del raster</span></div>
-        <label for="hotspot-percentile">Hotspots: percentil <span id="hotspot-label">98.5</span></label>
-        <input id="hotspot-percentile" type="range" min="90" max="99.8" step="0.1" value="98.5">
-        <div class="row" style="margin-top:10px">
-          <button id="reset-view" class="secondary">Vista nacional</button>
-          <button id="reload">Actualizar capas</button>
-        </div>
-        <div id="status" class="status"></div>
+
+
+    <div class="card" id="lots-card">
+      <h2>Lotes guardados y evaluación</h2>
+      <div class="check-row"><input id="show-lots" type="checkbox" checked><span>Mostrar lotes en el mapa</span></div>
+      <div class="check-row"><input id="lots-only-mode" type="checkbox"><span>Modo solo lotes</span></div>
+      <label for="lots-token">Token de administración</label>
+      <input id="lots-token" type="password" placeholder="Solo necesario si LOTS_ADMIN_TOKEN está configurado" autocomplete="off">
+
+      <div class="lots-grid">
+        <div class="full"><label for="lot-name">Nombre del lote</label><input id="lot-name" type="text" placeholder="Ej.: Chaco'i – lote 12"></div>
+        <div><label for="lot-status">Estado</label><select id="lot-status"><option value="candidate">Candidato</option><option value="interesting">Interesante</option><option value="visited">Visitado</option><option value="negotiating">Negociando</option><option value="bought">Comprado</option><option value="discarded">Descartado</option></select></div>
+        <div><label for="lot-use">Uso evaluado</label><select id="lot-use"><option value="residential">Residencial</option><option value="commercial">Comercial</option><option value="industrial">Industrial</option><option value="mixed">Mixto</option></select></div>
+        <div><label for="lot-lat">Latitud</label><input id="lot-lat" type="number" step="0.000001" placeholder="-25.2865"></div>
+        <div><label for="lot-lon">Longitud</label><input id="lot-lon" type="number" step="0.000001" placeholder="-57.6470"></div>
+        <div><label for="lot-area">Superficie m²</label><input id="lot-area" type="number" min="1" step="1" placeholder="360"></div>
+        <div><label for="lot-frontage">Frente m (opcional)</label><input id="lot-frontage" type="number" min="0" step="0.1" placeholder="12"></div>
+        <div><label for="lot-price">Precio total</label><input id="lot-price" type="number" min="0" step="0.01" placeholder="45000000"></div>
+        <div><label for="lot-currency">Moneda</label><select id="lot-currency"><option value="PYG">PYG / guaraníes</option><option value="USD">USD</option></select></div>
+        <div><label for="lot-ring1">Anillo 1 km</label><input id="lot-ring1" type="number" min="0.2" max="25" step="0.1" value="1"></div>
+        <div><label for="lot-ring2">Anillo 2 km</label><input id="lot-ring2" type="number" min="0.5" max="80" step="0.5" value="5"></div>
+        <div class="full"><label for="lot-url">Enlace del aviso</label><input id="lot-url" type="text" placeholder="https://..."></div>
+        <div class="full"><label for="lot-notes">Notas</label><textarea id="lot-notes" rows="2" style="width:100%;border:1px solid #cfd8e1;border-radius:8px;padding:8px" placeholder="Título, padrón, cota, acceso, vendedor..."></textarea></div>
       </div>
-    </details>
 
-    <details class="menu-section" id="lots-card">
-      <summary>Lotes guardados y evaluación</summary>
-      <div class="menu-section-body">
-        <div class="check-row"><input id="show-lots" type="checkbox" checked><span>Mostrar lotes en el mapa</span></div>
-        <div class="check-row"><input id="lots-only-mode" type="checkbox"><span>Modo solo lotes</span></div>
-        <label for="lots-token">Token de administración</label>
-        <input id="lots-token" type="password" placeholder="Solo necesario si LOTS_ADMIN_TOKEN está configurado" autocomplete="off">
-        <div class="lots-grid">
-          <div class="full"><label for="lot-name">Nombre del lote</label><input id="lot-name" type="text" placeholder="Ej.: Chaco'i – lote 12"></div>
-          <div><label for="lot-status">Estado</label><select id="lot-status"><option value="candidate">Candidato</option><option value="interesting">Interesante</option><option value="visited">Visitado</option><option value="negotiating">Negociando</option><option value="bought">Comprado</option><option value="discarded">Descartado</option></select></div>
-          <div><label for="lot-use">Uso evaluado</label><select id="lot-use"><option value="residential">Residencial</option><option value="commercial">Comercial</option><option value="industrial">Industrial</option><option value="mixed">Mixto</option></select></div>
-          <div><label for="lot-lat">Latitud</label><input id="lot-lat" type="number" step="0.000001" placeholder="-25.2865"></div>
-          <div><label for="lot-lon">Longitud</label><input id="lot-lon" type="number" step="0.000001" placeholder="-57.6470"></div>
-          <div><label for="lot-area">Superficie m²</label><input id="lot-area" type="number" min="1" step="1" placeholder="360"></div>
-          <div><label for="lot-frontage">Frente m (opcional)</label><input id="lot-frontage" type="number" min="0" step="0.1" placeholder="12"></div>
-          <div><label for="lot-price">Precio total</label><input id="lot-price" type="number" min="0" step="0.01" placeholder="45000000"></div>
-          <div><label for="lot-currency">Moneda</label><select id="lot-currency"><option value="PYG">PYG / guaraníes</option><option value="USD">USD</option></select></div>
-          <div><label for="lot-ring1">Anillo 1 km</label><input id="lot-ring1" type="number" min="0.2" max="25" step="0.1" value="1"></div>
-          <div><label for="lot-ring2">Anillo 2 km</label><input id="lot-ring2" type="number" min="0.5" max="80" step="0.5" value="5"></div>
-          <div class="full"><label for="lot-url">Enlace del aviso</label><input id="lot-url" type="text" placeholder="https://..."></div>
-          <div class="full"><label for="lot-notes">Notas</label><textarea id="lot-notes" rows="2" style="width:100%;border:1px solid #cfd8e1;border-radius:8px;padding:8px" placeholder="Título, padrón, cota, acceso, vendedor..."></textarea></div>
-        </div>
-        <div class="lot-actions">
-          <button id="pick-lot-point" type="button" class="secondary">Elegir punto</button>
-          <button id="draw-lot-polygon" type="button" class="secondary">Dibujar polígono</button>
-          <button id="finish-lot-polygon" type="button" class="secondary">Cerrar polígono</button>
-          <button id="clear-lot-draft" type="button" class="secondary">Limpiar dibujo</button>
-          <button id="save-lot" type="button" class="full">Guardar lote</button>
-          <button id="cancel-lot-edit" type="button" class="secondary full" style="display:none">Cancelar edición</button>
-        </div>
-        <div id="lot-drawing-status" class="lot-drawing" style="display:none"></div>
-        <div id="lots-status" class="status"></div>
-        <div id="lots-list" class="lot-list small"></div>
-        <div id="lot-evaluation" class="lot-evaluation small">Selecciona “Evaluar” en un lote guardado para comparar radiancia, servicios, ciudades, industrias y precio.</div>
+      <div class="lot-actions">
+        <button id="pick-lot-point" type="button" class="secondary">Elegir punto</button>
+        <button id="draw-lot-polygon" type="button" class="secondary">Dibujar polígono</button>
+        <button id="finish-lot-polygon" type="button" class="secondary">Cerrar polígono</button>
+        <button id="clear-lot-draft" type="button" class="secondary">Limpiar dibujo</button>
+        <button id="save-lot" type="button" class="full">Guardar lote</button>
+        <button id="cancel-lot-edit" type="button" class="secondary full" style="display:none">Cancelar edición</button>
       </div>
-    </details>
+      <div id="lot-drawing-status" class="lot-drawing" style="display:none"></div>
+      <div id="lots-status" class="status"></div>
+      <div id="lots-list" class="lot-list small"></div>
+      <div id="lot-evaluation" class="lot-evaluation small">Selecciona “Evaluar” en un lote guardado para comparar radiancia, servicios, ciudades, industrias y precio.</div>
+    </div>
 
-    <details class="menu-section" id="services-card">
-      <summary>Servicios, industrias y tiempos de viaje</summary>
-      <div class="menu-section-body">
-        <div class="check-row"><input id="show-services" type="checkbox"><span>Mostrar servicios e industrias en el mapa</span></div>
-        <div id="service-options" class="service-options"></div>
-        <div class="check-row"><input id="show-industrial-zones" type="checkbox"><span>Mostrar polígonos de zonas industriales</span></div>
-        <div class="check-row"><input id="driving-times" type="checkbox" checked><span>Calcular tiempos reales en auto al hacer clic</span></div>
-        <div class="row" style="margin-top:9px">
-          <button id="reload-services" class="secondary" type="button">Actualizar servicios</button>
-          <button id="clear-route" class="secondary" type="button">Quitar ruta</button>
-        </div>
-        <div id="service-status" class="status"></div>
-        <div id="service-results" class="small">Haz clic en el mapa para buscar los servicios o industrias seleccionados más cercanos.</div>
+    <div class="card" id="services-card">
+      <h2>Servicios, industrias y tiempos de viaje</h2>
+      <div class="check-row"><input id="show-services" type="checkbox"><span>Mostrar servicios e industrias en el mapa</span></div>
+      <div id="service-options" class="service-options"></div>
+      <div class="check-row"><input id="show-industrial-zones" type="checkbox"><span>Mostrar polígonos de zonas industriales</span></div>
+      <div class="check-row"><input id="driving-times" type="checkbox" checked><span>Calcular tiempos reales en auto al hacer clic</span></div>
+      <div class="row" style="margin-top:9px">
+        <button id="reload-services" class="secondary" type="button">Actualizar servicios</button>
+        <button id="clear-route" class="secondary" type="button">Quitar ruta</button>
       </div>
-    </details>
+      <div id="service-status" class="status"></div>
+      <div id="service-results" class="small">Haz clic en el mapa para buscar los servicios o industrias seleccionados más cercanos.</div>
+    </div>
 
-    <details class="menu-section" id="selected-zone-section">
-      <summary>Zona seleccionada</summary>
-      <div class="menu-section-body">
-        <div id="feature-info" class="small">Pasa el cursor sobre una zona para ver sus métricas. Haz clic para cargar su serie anual.</div>
-        <div id="chart-wrap"><canvas id="series-chart"></canvas></div>
-      </div>
-    </details>
+    <div class="card">
+      <h2>Zona seleccionada</h2>
+      <div id="feature-info" class="small">Pasa el cursor sobre una zona para ver sus métricas. Haz clic para cargar su serie anual.</div>
+      <div id="chart-wrap"><canvas id="series-chart"></canvas></div>
+    </div>
 
-    <details class="menu-section" id="pixel-section">
-      <summary>Píxel seleccionado</summary>
-      <div class="menu-section-body">
-        <div id="pixel-info" class="small">Haz clic en el mapa para consultar los valores del píxel VIIRS en esa coordenada.</div>
-      </div>
-    </details>
+    <div class="card">
+      <h2>Píxel seleccionado</h2>
+      <div id="pixel-info" class="small">Haz clic en el mapa para consultar los valores del píxel VIIRS en esa coordenada.</div>
+    </div>
 
-    <details class="menu-section" id="ranking-section">
-      <summary>Ranking de zonas</summary>
-      <div class="menu-section-body"><ol id="top-list"></ol></div>
-    </details>
+    <div class="card">
+      <h2>Ranking de zonas</h2>
+      <ol id="top-list"></ol>
+    </div>
 
-    <div class="small menu-footnote">Los años parciales pueden aparecer en las series, pero el script principal los excluye de los rankings. Las capas de industrias dependen de la cobertura de OpenStreetMap y no constituyen un censo oficial.</div>
+    <div class="small">Los años parciales pueden aparecer en las series, pero el script principal los excluye de los rankings. Las capas de industrias dependen de la cobertura de OpenStreetMap y no constituyen un censo oficial.</div>
   </aside>
   <main id="map"></main>
 </div>
@@ -2657,8 +2610,7 @@ function createMapPanes() {
 
 async function init() {
   state.config = await fetchJson('/api/config');
-  state.map = L.map('map', {zoomControl:false, preferCanvas:true});
-  L.control.zoom({position:'topright'}).addTo(state.map);
+  state.map = L.map('map', {zoomControl:true, preferCanvas:true});
   createMapPanes();
   // Un solo renderer administrativo evita canvases superpuestos después de
   // cambiar repetidamente de nivel, departamento o métrica.
@@ -2750,15 +2702,6 @@ function selectedServiceGroups() {
 }
 
 function bindEvents() {
-  const menuToggle = document.getElementById('menu-toggle');
-  const sidebar = document.getElementById('sidebar');
-  const setMenuOpen = open => {
-    sidebar.classList.toggle('menu-closed', !open);
-    menuToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-    menuToggle.title = open ? 'Cerrar menú' : 'Abrir menú';
-  };
-  menuToggle.addEventListener('click', () => setMenuOpen(sidebar.classList.contains('menu-closed')));
-
   document.getElementById('base-map').addEventListener('change', ev => {
     if (state.currentBase) state.map.removeLayer(state.currentBase);
     state.currentBase = state.baseLayers[ev.target.value].addTo(state.map);
