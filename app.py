@@ -80,7 +80,7 @@ except Exception:  # pragma: no cover
 
 
 APP_TITLE = "Explorador de luces nocturnas de Paraguay"
-APP_BUILD = "2026-08-06-R9-LOTES-SQL-EVALUACION"
+APP_BUILD = "2026-08-07-R10-MENU-PLEGABLE"
 DEFAULT_DATA_DIR = "Resultados_luces_nocturnas_Paraguay"
 WEB_MERCATOR = "EPSG:3857"
 WGS84 = "EPSG:4326"
@@ -2207,9 +2207,33 @@ INDEX_HTML = r"""
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; color: var(--ink); background: var(--bg); }
-    #app { height: 100%; display: grid; grid-template-columns: 380px 1fr; }
-    #sidebar { height: 100%; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line); padding: 18px; z-index: 1000; }
-    #map { height: 100%; width: 100%; background: #dbe4ec; }
+    #app { height: 100%; display: grid; grid-template-columns: 380px minmax(0, 1fr); transition: grid-template-columns .22s ease; }
+    #sidebar { height: 100%; overflow-y: auto; overflow-x: hidden; background: var(--panel); border-right: 1px solid var(--line); padding: 18px; z-index: 1000; transition: opacity .16s ease, padding .22s ease, border-color .22s ease; }
+    #map { height: 100%; width: 100%; min-width: 0; background: #dbe4ec; }
+    body.sidebar-collapsed #app { grid-template-columns: 0 minmax(0, 1fr); }
+    body.sidebar-collapsed #sidebar { opacity: 0; pointer-events: none; padding-left: 0; padding-right: 0; border-right-color: transparent; }
+    #menu-toggle {
+      position: fixed; top: 16px; left: 396px; z-index: 2400; width: 42px; height: 42px; padding: 0;
+      display: flex; align-items: center; justify-content: center; border-radius: 10px;
+      background: var(--accent); color: #fff; box-shadow: 0 8px 22px rgba(15,23,42,.22);
+      font-size: 20px; line-height: 1; transition: left .22s ease, transform .15s ease;
+    }
+    #menu-toggle:hover { filter: brightness(.96); transform: translateY(-1px); }
+    body.sidebar-collapsed #menu-toggle { left: 14px; top: 82px; }
+    .sidebar-heading { padding-right: 26px; }
+    .accordion-card { padding: 0; overflow: visible; }
+    .accordion-card > summary {
+      list-style: none; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 8px;
+      padding: 12px 13px; font-size: 14px; font-weight: 800; color: var(--ink);
+    }
+    .accordion-card > summary::-webkit-details-marker { display: none; }
+    .accordion-card > summary::marker { display: none; content: ''; }
+    .accordion-card > summary:hover { background: #f8fafc; border-radius: 12px; }
+    .accordion-card[open] > summary { border-bottom: 1px solid #eef2f5; border-radius: 12px 12px 0 0; }
+    .accordion-chevron { margin-left: auto; color: var(--muted); font-size: 16px; line-height: 1; transition: transform .18s ease; }
+    .accordion-card[open] .accordion-chevron { transform: rotate(180deg); }
+    .accordion-content { padding: 2px 13px 13px; }
+    .accordion-content > label:first-child, .accordion-content > .check-row:first-child { margin-top: 10px; }
     h1 { font-size: 22px; line-height: 1.15; margin: 0 0 6px; letter-spacing: -0.02em; }
     h2 { font-size: 15px; margin: 0 0 10px; }
     .subtitle { color: var(--muted); font-size: 12.5px; line-height: 1.45; margin-bottom: 14px; }
@@ -2308,20 +2332,28 @@ INDEX_HTML = r"""
     .map-name-label::before { display: none; }
     .leaflet-control-attribution { font-size: 9px; }
     @media (max-width: 900px) {
-      #app { grid-template-columns: 1fr; grid-template-rows: 48% 52%; }
-      #sidebar { border-right: 0; border-bottom: 1px solid var(--line); padding: 12px; }
+      #app { display: block; }
+      #map { position: fixed; inset: 0; }
+      #sidebar { position: fixed; inset: 0 auto 0 0; width: min(88vw, 380px); padding: 12px; box-shadow: var(--shadow); }
+      body.sidebar-collapsed #sidebar { transform: translateX(-100%); }
+      #menu-toggle { left: min(calc(88vw + 12px), 392px); }
+      body.sidebar-collapsed #menu-toggle { left: 14px; top: 82px; }
     }
   </style>
 </head>
 <body>
+<button id="menu-toggle" type="button" aria-label="Abrir o cerrar menú" aria-expanded="true" title="Abrir/cerrar menú">⚙</button>
 <div id="app">
   <aside id="sidebar">
-    <h1>{{ title }}</h1>
+    <div class="sidebar-heading">
+      <h1>{{ title }}</h1>
+    </div>
     <div style="display:inline-block;margin:5px 0 10px;padding:4px 8px;border-radius:999px;background:#e8f4ff;color:#075985;font-size:10px;font-weight:800;letter-spacing:.03em">VERSIÓN {{ build }}</div>
     <div class="subtitle">Radiancia VIIRS anual ponderada (nW/cm²/sr). La luminosidad es un indicador indirecto de actividad y urbanización, no una prueba de valorización inmobiliaria.</div>
 
-    <div class="card">
-      <h2>Buscar cualquier zona</h2>
+    <details class="card accordion-card" open>
+      <summary>Buscar cualquier zona <span class="accordion-chevron">⌄</span></summary>
+      <div class="accordion-content">
       <div class="search-wrap">
         <input id="search-input" type="text" placeholder="Ej.: San Bernardino, Yby Yaú, Caaguazú…" autocomplete="off">
         <div id="search-results"></div>
@@ -2330,10 +2362,12 @@ INDEX_HTML = r"""
         <button id="clear-search-selection" type="button" class="secondary">Quitar selección buscada</button>
       </div>
       <div class="small" style="margin-top:7px">Busca departamentos, distritos, ciudades, pueblos y localidades. Usa “Quitar selección” o la tecla Esc para volver al hover normal.</div>
-    </div>
+      </div>
+    </details>
 
-    <div class="card">
-      <h2>Visualización</h2>
+    <details class="card accordion-card" open>
+      <summary>Visualización <span class="accordion-chevron">⌄</span></summary>
+      <div class="accordion-content">
       <label for="base-map">Mapa base</label>
       <select id="base-map">
         <option value="osm">OpenStreetMap</option>
@@ -2364,12 +2398,14 @@ INDEX_HTML = r"""
         <button id="reload">Actualizar capas</button>
       </div>
       <div id="status" class="status"></div>
-    </div>
+      </div>
+    </details>
 
 
 
-    <div class="card" id="lots-card">
-      <h2>Lotes guardados y evaluación</h2>
+    <details class="card accordion-card" id="lots-card">
+      <summary>Lotes guardados y evaluación <span class="accordion-chevron">⌄</span></summary>
+      <div class="accordion-content">
       <div class="check-row"><input id="show-lots" type="checkbox" checked><span>Mostrar lotes en el mapa</span></div>
       <div class="check-row"><input id="lots-only-mode" type="checkbox"><span>Modo solo lotes</span></div>
       <label for="lots-token">Token de administración</label>
@@ -2403,10 +2439,12 @@ INDEX_HTML = r"""
       <div id="lots-status" class="status"></div>
       <div id="lots-list" class="lot-list small"></div>
       <div id="lot-evaluation" class="lot-evaluation small">Selecciona “Evaluar” en un lote guardado para comparar radiancia, servicios, ciudades, industrias y precio.</div>
-    </div>
+      </div>
+    </details>
 
-    <div class="card" id="services-card">
-      <h2>Servicios, industrias y tiempos de viaje</h2>
+    <details class="card accordion-card" id="services-card">
+      <summary>Servicios, industrias y tiempos de viaje <span class="accordion-chevron">⌄</span></summary>
+      <div class="accordion-content">
       <div class="check-row"><input id="show-services" type="checkbox"><span>Mostrar servicios e industrias en el mapa</span></div>
       <div id="service-options" class="service-options"></div>
       <div class="check-row"><input id="show-industrial-zones" type="checkbox"><span>Mostrar polígonos de zonas industriales</span></div>
@@ -2417,23 +2455,30 @@ INDEX_HTML = r"""
       </div>
       <div id="service-status" class="status"></div>
       <div id="service-results" class="small">Haz clic en el mapa para buscar los servicios o industrias seleccionados más cercanos.</div>
-    </div>
+      </div>
+    </details>
 
-    <div class="card">
-      <h2>Zona seleccionada</h2>
+    <details class="card accordion-card">
+      <summary>Zona seleccionada <span class="accordion-chevron">⌄</span></summary>
+      <div class="accordion-content">
       <div id="feature-info" class="small">Pasa el cursor sobre una zona para ver sus métricas. Haz clic para cargar su serie anual.</div>
       <div id="chart-wrap"><canvas id="series-chart"></canvas></div>
-    </div>
+      </div>
+    </details>
 
-    <div class="card">
-      <h2>Píxel seleccionado</h2>
+    <details class="card accordion-card">
+      <summary>Píxel seleccionado <span class="accordion-chevron">⌄</span></summary>
+      <div class="accordion-content">
       <div id="pixel-info" class="small">Haz clic en el mapa para consultar los valores del píxel VIIRS en esa coordenada.</div>
-    </div>
+      </div>
+    </details>
 
-    <div class="card">
-      <h2>Ranking de zonas</h2>
-      <ol id="top-list"></ol>
-    </div>
+    <details class="card accordion-card">
+      <summary>Ranking de zonas <span class="accordion-chevron">⌄</span></summary>
+      <div class="accordion-content">
+        <ol id="top-list"></ol>
+      </div>
+    </details>
 
     <div class="small">Los años parciales pueden aparecer en las series, pero el script principal los excluye de los rankings. Las capas de industrias dependen de la cobertura de OpenStreetMap y no constituyen un censo oficial.</div>
   </aside>
@@ -2608,7 +2653,35 @@ function createMapPanes() {
   state.map.getPane('searchPane').style.pointerEvents = 'none';
 }
 
+function setSidebarCollapsed(collapsed, persist=true) {
+  document.body.classList.toggle('sidebar-collapsed', Boolean(collapsed));
+  const toggle = document.getElementById('menu-toggle');
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    toggle.title = collapsed ? 'Abrir menú' : 'Cerrar menú';
+  }
+  if (persist) {
+    try { localStorage.setItem('nightlights-sidebar-collapsed', collapsed ? '1' : '0'); } catch (_) {}
+  }
+  window.setTimeout(() => { if (state.map) state.map.invalidateSize({pan:false}); }, 240);
+}
+
+function initSidebarMenu() {
+  let collapsed = false;
+  try { collapsed = localStorage.getItem('nightlights-sidebar-collapsed') === '1'; } catch (_) {}
+  setSidebarCollapsed(collapsed, false);
+  document.getElementById('menu-toggle').addEventListener('click', () => {
+    setSidebarCollapsed(!document.body.classList.contains('sidebar-collapsed'));
+  });
+  document.querySelectorAll('.accordion-card').forEach(section => {
+    section.addEventListener('toggle', () => {
+      window.setTimeout(() => { if (state.map) state.map.invalidateSize({pan:false}); }, 40);
+    });
+  });
+}
+
 async function init() {
+  initSidebarMenu();
   state.config = await fetchJson('/api/config');
   state.map = L.map('map', {zoomControl:true, preferCanvas:true});
   createMapPanes();
