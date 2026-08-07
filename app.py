@@ -80,7 +80,7 @@ except Exception:  # pragma: no cover
 
 
 APP_TITLE = "Explorador de luces nocturnas de Paraguay"
-APP_BUILD = "2026-08-07-R10-MENU-PLEGABLE"
+APP_BUILD = "2026-08-07-R11-MENU-SCROLL-LOTES"
 DEFAULT_DATA_DIR = "Resultados_luces_nocturnas_Paraguay"
 WEB_MERCATOR = "EPSG:3857"
 WGS84 = "EPSG:4326"
@@ -2207,20 +2207,31 @@ INDEX_HTML = r"""
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; color: var(--ink); background: var(--bg); }
-    #app { height: 100%; display: grid; grid-template-columns: 380px minmax(0, 1fr); transition: grid-template-columns .22s ease; }
-    #sidebar { height: 100%; overflow-y: auto; overflow-x: hidden; background: var(--panel); border-right: 1px solid var(--line); padding: 18px; z-index: 1000; transition: opacity .16s ease, padding .22s ease, border-color .22s ease; }
-    #map { height: 100%; width: 100%; min-width: 0; background: #dbe4ec; }
+    #app { height: 100dvh; min-height: 0; display: grid; grid-template-columns: 380px minmax(0, 1fr); transition: grid-template-columns .22s ease; }
+    #sidebar {
+      height: 100dvh; min-height: 0; overflow-y: auto; overflow-x: hidden; background: var(--panel);
+      border-right: 1px solid var(--line); padding: 18px 18px max(46px, calc(env(safe-area-inset-bottom, 0px) + 32px));
+      z-index: 1000; transition: opacity .16s ease, padding .22s ease, border-color .22s ease, transform .22s ease;
+      overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; scrollbar-gutter: stable;
+    }
+    #map { height: 100dvh; width: 100%; min-width: 0; background: #dbe4ec; }
     body.sidebar-collapsed #app { grid-template-columns: 0 minmax(0, 1fr); }
     body.sidebar-collapsed #sidebar { opacity: 0; pointer-events: none; padding-left: 0; padding-right: 0; border-right-color: transparent; }
     #menu-toggle {
-      position: fixed; top: 16px; left: 396px; z-index: 2400; width: 42px; height: 42px; padding: 0;
-      display: flex; align-items: center; justify-content: center; border-radius: 10px;
+      position: fixed; top: 16px; left: 14px; z-index: 2400; width: 42px; height: 42px; padding: 0;
+      display: none; align-items: center; justify-content: center; border-radius: 10px;
       background: var(--accent); color: #fff; box-shadow: 0 8px 22px rgba(15,23,42,.22);
-      font-size: 20px; line-height: 1; transition: left .22s ease, transform .15s ease;
+      font-size: 20px; line-height: 1; transition: transform .15s ease;
     }
     #menu-toggle:hover { filter: brightness(.96); transform: translateY(-1px); }
-    body.sidebar-collapsed #menu-toggle { left: 14px; top: 82px; }
-    .sidebar-heading { padding-right: 26px; }
+    body.sidebar-collapsed #menu-toggle { display: flex; }
+    .sidebar-heading { display:flex; align-items:flex-start; gap:10px; }
+    .sidebar-heading h1 { flex:1 1 auto; min-width:0; }
+    #menu-close {
+      flex:0 0 auto; width:34px; height:34px; padding:0; display:flex; align-items:center; justify-content:center;
+      border-radius:9px; background:#eef4fb; color:var(--accent); border:1px solid #c6d9ee; font-size:20px; line-height:1;
+    }
+    #menu-close:hover { background:#e2edf9; filter:none; }
     .accordion-card { padding: 0; overflow: visible; }
     .accordion-card > summary {
       list-style: none; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 8px;
@@ -2300,7 +2311,7 @@ INDEX_HTML = r"""
     .lot-actions { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin-top:8px; }
     .lot-actions .full { grid-column:1 / -1; }
     .lot-drawing { background:#fff7ed; border:1px solid #fed7aa; color:#9a4d00; border-radius:8px; padding:7px; margin-top:8px; font-size:11px; }
-    .lot-list { margin-top:9px; max-height:300px; overflow:auto; border-top:1px solid #eef2f5; }
+    .lot-list { margin-top:9px; border-top:1px solid #eef2f5; overflow:visible; }
     .lot-item { padding:9px 0; border-bottom:1px solid #eef2f5; }
     .lot-item-title { display:flex; align-items:center; gap:6px; }
     .lot-item-title strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -2308,6 +2319,10 @@ INDEX_HTML = r"""
     .lot-item-actions { display:flex; flex-wrap:wrap; gap:5px; margin-top:6px; }
     .lot-item-actions button { padding:5px 7px; font-size:9.5px; }
     .lot-evaluation { margin-top:9px; padding-top:9px; border-top:1px solid #eef2f5; }
+    .lot-source-box { margin:8px 0 10px; padding:9px; border:1px solid #dbe5ef; border-radius:9px; background:#f8fafc; font-size:11px; line-height:1.45; overflow-wrap:anywhere; }
+    .lot-source-box a { color:var(--accent); font-weight:800; text-decoration:none; }
+    .lot-source-box a:hover { text-decoration:underline; }
+    .lot-notes { margin-top:7px; white-space:pre-wrap; color:#334155; }
     .lot-score { font-size:24px; font-weight:800; color:var(--accent); }
     .lot-table { width:100%; border-collapse:collapse; font-size:10.5px; }
     .lot-table td { border-bottom:1px solid #eef2f5; padding:5px 2px; vertical-align:top; }
@@ -2333,11 +2348,9 @@ INDEX_HTML = r"""
     .leaflet-control-attribution { font-size: 9px; }
     @media (max-width: 900px) {
       #app { display: block; }
-      #map { position: fixed; inset: 0; }
-      #sidebar { position: fixed; inset: 0 auto 0 0; width: min(88vw, 380px); padding: 12px; box-shadow: var(--shadow); }
+      #map { position: fixed; inset: 0; height:100dvh; }
+      #sidebar { position: fixed; inset: 0 auto 0 0; width: min(88vw, 380px); height:100dvh; padding: 12px 12px max(54px, calc(env(safe-area-inset-bottom, 0px) + 38px)); box-shadow: var(--shadow); }
       body.sidebar-collapsed #sidebar { transform: translateX(-100%); }
-      #menu-toggle { left: min(calc(88vw + 12px), 392px); }
-      body.sidebar-collapsed #menu-toggle { left: 14px; top: 82px; }
     }
   </style>
 </head>
@@ -2347,11 +2360,12 @@ INDEX_HTML = r"""
   <aside id="sidebar">
     <div class="sidebar-heading">
       <h1>{{ title }}</h1>
+      <button id="menu-close" type="button" aria-label="Cerrar menú" title="Cerrar menú">×</button>
     </div>
     <div style="display:inline-block;margin:5px 0 10px;padding:4px 8px;border-radius:999px;background:#e8f4ff;color:#075985;font-size:10px;font-weight:800;letter-spacing:.03em">VERSIÓN {{ build }}</div>
     <div class="subtitle">Radiancia VIIRS anual ponderada (nW/cm²/sr). La luminosidad es un indicador indirecto de actividad y urbanización, no una prueba de valorización inmobiliaria.</div>
 
-    <details class="card accordion-card" open>
+    <details class="card accordion-card">
       <summary>Buscar cualquier zona <span class="accordion-chevron">⌄</span></summary>
       <div class="accordion-content">
       <div class="search-wrap">
@@ -2365,7 +2379,7 @@ INDEX_HTML = r"""
       </div>
     </details>
 
-    <details class="card accordion-card" open>
+    <details class="card accordion-card">
       <summary>Visualización <span class="accordion-chevron">⌄</span></summary>
       <div class="accordion-content">
       <label for="base-map">Mapa base</label>
@@ -2653,31 +2667,27 @@ function createMapPanes() {
   state.map.getPane('searchPane').style.pointerEvents = 'none';
 }
 
-function setSidebarCollapsed(collapsed, persist=true) {
+function setSidebarCollapsed(collapsed) {
   document.body.classList.toggle('sidebar-collapsed', Boolean(collapsed));
   const toggle = document.getElementById('menu-toggle');
   if (toggle) {
     toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-    toggle.title = collapsed ? 'Abrir menú' : 'Cerrar menú';
-  }
-  if (persist) {
-    try { localStorage.setItem('nightlights-sidebar-collapsed', collapsed ? '1' : '0'); } catch (_) {}
+    toggle.title = collapsed ? 'Abrir menú' : 'Menú abierto';
   }
   window.setTimeout(() => { if (state.map) state.map.invalidateSize({pan:false}); }, 240);
 }
 
 function initSidebarMenu() {
-  let collapsed = false;
-  try { collapsed = localStorage.getItem('nightlights-sidebar-collapsed') === '1'; } catch (_) {}
-  setSidebarCollapsed(collapsed, false);
-  document.getElementById('menu-toggle').addEventListener('click', () => {
-    setSidebarCollapsed(!document.body.classList.contains('sidebar-collapsed'));
-  });
+  // Siempre inicia con el menú visible y todas las secciones plegadas.
   document.querySelectorAll('.accordion-card').forEach(section => {
+    section.open = false;
     section.addEventListener('toggle', () => {
       window.setTimeout(() => { if (state.map) state.map.invalidateSize({pan:false}); }, 40);
     });
   });
+  setSidebarCollapsed(false);
+  document.getElementById('menu-toggle').addEventListener('click', () => setSidebarCollapsed(false));
+  document.getElementById('menu-close').addEventListener('click', () => setSidebarCollapsed(true));
 }
 
 async function init() {
@@ -3344,6 +3354,25 @@ function lotStatusLabel(value) {
   return ({candidate:'Candidato',interesting:'Interesante',visited:'Visitado',negotiating:'Negociando',bought:'Comprado',discarded:'Descartado'})[value] || value || 'Candidato';
 }
 
+function safeLotUrl(value) {
+  const raw=String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed=new URL(raw, window.location.href);
+    return ['http:','https:'].includes(parsed.protocol) ? parsed.href : '';
+  } catch (_) { return ''; }
+}
+
+function lotSourceDetailsHtml(lot) {
+  const url=safeLotUrl(lot?.source_url);
+  const notes=String(lot?.notes || '').trim();
+  if (!url && !notes) return '';
+  return `<div class="lot-source-box">
+    ${url?`<div><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Abrir aviso original ↗</a></div>`:''}
+    ${notes?`<div class="lot-notes"><strong>Notas:</strong><br>${escapeHtml(notes)}</div>`:''}
+  </div>`;
+}
+
 function lotStyle(feature) {
   const p=feature?.properties || {};
   const status=p.status || 'candidate';
@@ -3368,6 +3397,8 @@ async function loadLots() {
         const price=p.price_total?moneyFmt(p.price_total,p.currency):'Sin precio';
         const tooltip=`<strong>${escapeHtml(p.name || 'Lote')}</strong><br>${fmt(p.area_m2,0)} m² · ${price}${Number.isFinite(score)?`<br>Puntaje: ${fmt(score,1)}/100`:''}`;
         layer.bindTooltip(tooltip,{sticky:true,direction:'top',pane:'lotsPane',className:'service-tooltip'});
+        const popupDetails=lotSourceDetailsHtml(p);
+        layer.bindPopup(`<div style="min-width:220px;max-width:320px"><strong>${escapeHtml(p.name || 'Lote')}</strong><br><span class="small">${fmt(p.area_m2,0)} m² · ${price}</span>${popupDetails}</div>`,{maxWidth:340});
         layer.on('mouseover',()=>{layer.setStyle({weight:4,fillOpacity:.24}); if(layer.bringToFront) layer.bringToFront();});
         layer.on('mouseout',()=>layer.setStyle(lotStyle(feature)));
         layer.on('click',ev=>{if(ev?.originalEvent)L.DomEvent.stopPropagation(ev.originalEvent); showLotEvaluation(p.id);});
@@ -3388,9 +3419,12 @@ function renderLotsList(rows) {
     const item=document.createElement('div'); item.className='lot-item';
     const unit=Number(lot.price_per_m2);
     item.innerHTML=`<div class="lot-item-title"><strong>${escapeHtml(lot.name)}</strong><span class="lot-badge">${escapeHtml(lotStatusLabel(lot.status))}</span></div><div class="small">${fmt(lot.area_m2,0)} m² · ${lot.price_total?moneyFmt(lot.price_total,lot.currency):'sin precio'}${Number.isFinite(unit)?` · ${moneyFmt(unit,lot.currency)}/m²`:''}</div>`;
+    item.style.cursor='pointer';
+    item.title='Ver notas, enlace y evaluación';
+    item.addEventListener('click',()=>showLotEvaluation(lot.id));
     const actions=document.createElement('div'); actions.className='lot-item-actions';
     const buttons=[['Ubicar',()=>locateLot(lot)],['Evaluar',()=>evaluateLot(lot.id)],['Editar',()=>editLot(lot)],['Eliminar',()=>deleteLot(lot.id)]];
-    buttons.forEach(([label,fn])=>{const b=document.createElement('button');b.type='button';b.className=label==='Eliminar'?'secondary':'';b.textContent=label;b.addEventListener('click',fn);actions.appendChild(b);});
+    buttons.forEach(([label,fn])=>{const b=document.createElement('button');b.type='button';b.className=label==='Eliminar'?'secondary':'';b.textContent=label;b.addEventListener('click',ev=>{ev.stopPropagation();fn();});actions.appendChild(b);});
     item.appendChild(actions); container.appendChild(item);
   });
 }
@@ -3520,7 +3554,18 @@ async function evaluateLot(id) {
 function showLotEvaluation(id) {
   const lot=state.lotsRows.find(x=>Number(x.id)===Number(id));
   if (!lot) return;
-  if (lot.evaluation) renderLotEvaluation(lot); else document.getElementById('lot-evaluation').innerHTML=`<strong>${escapeHtml(lot.name)}</strong><br>Aún no evaluado. Usa el botón “Evaluar”.`;
+  const card=document.getElementById('lots-card');
+  if (card) card.open=true;
+  if (lot.evaluation) {
+    renderLotEvaluation(lot);
+  } else {
+    document.getElementById('lot-evaluation').innerHTML=`
+      <div class="info-title">${escapeHtml(lot.name)}</div>
+      <div class="info-sub">${fmt(lot.area_m2,0)} m² · ${lot.price_total?moneyFmt(lot.price_total,lot.currency):'sin precio'} · ${escapeHtml(lotStatusLabel(lot.status))}</div>
+      ${lotSourceDetailsHtml(lot)}
+      <div class="small">Aún no evaluado. Usa el botón “Evaluar” para calcular radiancia, servicios y comparables.</div>`;
+  }
+  window.setTimeout(()=>document.getElementById('lot-evaluation')?.scrollIntoView({behavior:'smooth',block:'nearest'}),80);
 }
 
 function renderLotEvaluation(lot) {
@@ -3532,6 +3577,7 @@ function renderLotEvaluation(lot) {
     <div class="info-title">${escapeHtml(lot.name)}</div>
     <div class="lot-score">${Number.isFinite(Number(score))?`${fmt(score,1)}/100`:'Sin puntaje'}</div>
     <div class="info-sub">Preevaluación comparativa · ${fmt(lot.area_m2,0)} m² · ${lot.price_total?moneyFmt(lot.price_total,lot.currency):'sin precio'}</div>
+    ${lotSourceDetailsHtml(lot)}
     <strong>Radiancia por anillo</strong><table class="lot-table"><tr><td>Anillo</td><td>Actual / cambio</td></tr>${ringRows}</table>
     <strong style="display:block;margin-top:8px">Servicios e industrias más cercanos</strong><table class="lot-table">${serviceRows}</table>
     <strong style="display:block;margin-top:8px">Localidades cercanas</strong><table class="lot-table">${cityRows}</table>
